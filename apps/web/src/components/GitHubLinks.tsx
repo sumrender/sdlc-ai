@@ -19,9 +19,9 @@ export function GitHubLinks({ task }: GitHubLinksProps) {
   ];
 
   return (
-    <dl className="grid gap-2.5 text-sm">
+    <dl className="grid min-w-0 grid-cols-1 gap-2.5 text-sm">
       {rows.map(({ icon: Icon, label, value, href, pending }) => (
-        <div key={label} className="flex items-center gap-2.5">
+        <div key={label} className="flex min-w-0 items-center gap-2.5">
           <Icon className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
           <dt className="w-28 shrink-0 text-xs text-muted-foreground">{label}</dt>
           <dd className="min-w-0 truncate font-mono text-xs">
