@@ -24,7 +24,10 @@ export function createApp(workflow: WorkflowService) {
   app.route(API_PATHS.tasks, taskRoutes(workflow, workflow.deps.artifacts));
   app.route(API_PATHS.project, projectRoutes(workflow));
   app.route(API_PATHS.events, eventRoutes());
-  app.post(API_PATHS.runDemo, async (c) => c.json(await workflow.runDemo(), 201));
+  app.post(API_PATHS.runDemo, async (c) => {
+    const task = await workflow.runDemo();
+    return c.json(await workflow.boardTask(task.id), 201);
+  });
   app.post(API_PATHS.resetDemo, async (c) => {
     const body = await readJson(c.req.raw);
     if ((body as { confirm?: unknown })?.confirm !== true) throw new HttpError(400, 'Reset requires { "confirm": true }');
