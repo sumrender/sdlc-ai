@@ -11,6 +11,7 @@ import {
   type ResetDemoResult,
 } from "@sdlc-ai/shared";
 import { developerBody } from "../agents/developer.js";
+import { e2eTestWriterBody } from "../agents/e2e-test-writer.js";
 import { plannerBody } from "../agents/planner.js";
 import { reviewerBody } from "../agents/reviewer.js";
 import { startAgentRun } from "../agents/runner.js";
@@ -34,6 +35,7 @@ import { bus } from "../events/bus.js";
 import { TIMEOUTS, type Deps } from "./deps.js";
 import { computeTouchedTargets, isTerminalDeployment, pollDeployments } from "./deployments.js";
 import { e2eFeedback, startTestRun } from "./e2e.js";
+import { ensureCoverage } from "./e2e-coverage.js";
 import {
   failTask,
   getProject,
@@ -148,7 +150,26 @@ export class WorkflowService {
   }
 
   // Gate: the latest Test Run passed. One automatic Reject loop to DEVELOPMENT per Task.
+  // Coverage: once per E2E visit, ensure an e2e spec covers the diff (writer runs
+  // inside the same loop budget — a writer failure fails the task outright).
   private async e2e(task: TaskRow): Promise<boolean> {
+    const writerRun = await latestAgentRun(task.id, "E2E_TEST_WRITER", task.stageEnteredAt);
+    if (writerRun && isActiveRun(writerRun.status)) return false;
+    if (writerRun && isFailedRun(writerRun.status)) {
+      await failTask(task.id, writerRun.error ?? `E2E_TEST_WRITER ${writerRun.status}`);
+      return false;
+    }
+    const coverageChecked = task.e2eCoverageCheckedAt && task.e2eCoverageCheckedAt >= task.stageEnteredAt;
+    if (!coverageChecked) {
+      const coverage = await ensureCoverage(this.deps, task);
+      if (!coverage.covered && !writerRun) {
+        const fresh = await requireTask(task.id);
+        await setStatus(fresh, "RUNNING", { agent: "E2E_TEST_WRITER" });
+        await startAgentRun(this.deps, task.id, "E2E_TEST_WRITER", e2eTestWriterBody);
+        return false;
+      }
+      task = await requireTask(task.id);
+    }
     const run = await latestTestRun(task.id, task.stageEnteredAt);
     if (!run) {
       await setStatus(task, "RUNNING", { testRun: true });
@@ -165,7 +186,10 @@ export class WorkflowService {
       return true;
     }
     if (!task.e2eRejectLoopUsed) {
-      await updateTask(task.id, { e2eRejectLoopUsed: true, pendingFeedback: e2eFeedback(run) });
+      const feedback = task.e2eGeneratedSpecPath
+        ? `${e2eFeedback(run)}\n\nThe E2E-generated spec (${task.e2eGeneratedSpecPath}) was part of this run; fix the spec or the code it covers.`
+        : e2eFeedback(run);
+      await updateTask(task.id, { e2eRejectLoopUsed: true, pendingFeedback: feedback });
       await transition(task, "DEVELOPMENT", "RUNNING");
       return true;
     }

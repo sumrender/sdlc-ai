@@ -53,7 +53,10 @@ export class FakeGitHubService implements GitHubService {
     return { number, url: `https://github.com/fake/meme/pull/${number}` };
   }
   async getChangedFiles() {
-    return ["fe/src/components/GalleryHeader.tsx", "fe/e2e/gallery.spec.ts"];
+    return (this as { changedFiles?: string[] }).changedFiles ?? ["fe/src/components/GalleryHeader.tsx", "fe/e2e/gallery.spec.ts"];
+  }
+  setChangedFiles(files: string[]) {
+    (this as { changedFiles?: string[] }).changedFiles = files;
   }
   async squashMerge(pullNumber: number) {
     this.log.push(`merged pr #${pullNumber}`);
@@ -76,6 +79,35 @@ export class FakeGitHubService implements GitHubService {
   }
   async getFileContent(path: string) {
     return path === MANIFEST_PATH ? FAKE_MANIFEST : null;
+  }
+  readonly comments: Array<{ id: number; body: string }> = [];
+  readonly prBodies = new Map<number, string>();
+  private commentSeq = 5000;
+  async createComment(pullNumber: number, body: string) {
+    const id = ++this.commentSeq;
+    this.comments.push({ id, body });
+    this.log.push(`comment on pr #${pullNumber}: ${body.slice(0, 80)}`);
+    return { id, url: `https://github.com/fake/meme/pull/${pullNumber}#issuecomment-${id}` };
+  }
+  async listComments() {
+    return [...this.comments];
+  }
+  async updateComment(commentId: number, body: string) {
+    const c = this.comments.find((c) => c.id === commentId);
+    if (c) c.body = body;
+    this.log.push(`updated comment ${commentId}`);
+  }
+  async getPullRequestBody(pullNumber: number) {
+    return this.prBodies.get(pullNumber) ?? `Fake PR body for #${pullNumber}`;
+  }
+  async updatePullRequestBody(pullNumber: number, body: string) {
+    this.prBodies.set(pullNumber, body);
+    this.log.push(`updated pr #${pullNumber} body`);
+  }
+  async uploadVideoAsset(fileName: string) {
+    const url = `https://github.com/fake/meme/releases/download/sdlc-e2e-assets/${fileName}`;
+    this.log.push(`uploaded video asset ${fileName}`);
+    return { url, name: fileName };
   }
   async connectionStatus() {
     return { ok: true, login: "fake-bot" };
@@ -109,7 +141,13 @@ class FakeSandbox implements Sandbox {
       return ok(`[${branch ?? "HEAD"}] ${fakeSha().slice(0, 7)} committed\nSDLC_PUSHED ${fakeSha()}`);
     }
     if (command.startsWith("git diff")) return ok(FAKE_DIFF);
+    // E2E suite: emit a Playwright-style summary. The --config overlay flag is accepted and ignored.
     if (command.includes("test:e2e")) return ok("Running 3 tests using 1 worker\n\n  3 passed (2.1s)");
+    if (command.startsWith("ls playwright") || command.startsWith("ls config/playwright")) return ok("playwright.config.ts");
+    if (command.startsWith("cat playwright")) return ok("import { defineConfig } from '@playwright/test';\nexport default defineConfig({ testDir: './e2e' });");
+    if (command.startsWith("git status --porcelain") || command.startsWith("git diff --cached --name-only")) {
+      return ok(this.name.includes("e2e") ? "fe/e2e/generated-coverage.spec.ts" : "");
+    }
     if (command.startsWith("git clone")) return ok("Cloning into '/workspace'...");
     return ok();
   }
@@ -125,6 +163,8 @@ class FakeSandbox implements Sandbox {
         : 'One thing to clarify before I plan.\n\n```json\n{ "plan": null, "question": { "text": "Should the count include hidden/unpublished templates?", "options": ["Only published templates", "All templates"] } }\n```';
     } else if (agent.includes("developer")) {
       text = "Implemented the template count in fe/src/components/GalleryHeader.tsx and added an E2E assertion in fe/e2e/gallery.spec.ts. Build passes.";
+    } else if (agent.includes("e2e-test-writer")) {
+      text = "Wrote a focused spec for the template count header.\n\nSPEC_PATH: fe/e2e/generated-coverage.spec.ts";
     } else if (agent.includes("security")) {
       text = 'Reviewed.\n\n```json\n{ "verdict": "REJECT", "findings": [ { "severity": "HIGH", "message": "templates.length is rendered without a null guard; a failed fetch renders a crash", "file": "fe/src/components/GalleryHeader.tsx", "line": 6 } ] }\n```';
     } else {
@@ -140,7 +180,23 @@ class FakeSandbox implements Sandbox {
 
   async writeFile() {}
 
-  async copyOut() {
+  async copyOut(containerPath: string, hostDir: string) {
+    // Materialize stub artifacts so importDir picks up a VIDEO + report.
+    try {
+      const { default: fs } = await import("node:fs/promises");
+      const { default: path } = await import("node:path");
+      await fs.mkdir(hostDir, { recursive: true });
+      if (containerPath.includes("test-results")) {
+        await fs.writeFile(path.join(hostDir, "generated-coverage-video.mp4"), "fake-mp4-bytes");
+        return true;
+      }
+      if (containerPath.includes("playwright-report")) {
+        await fs.writeFile(path.join(hostDir, "index.html"), "<html><body>Fake Playwright report</body></html>");
+        return true;
+      }
+    } catch {
+      // fall through to false
+    }
     return false;
   }
 

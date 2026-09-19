@@ -23,6 +23,8 @@ const LABEL: Record<EventType, string> = {
   DEPLOYMENT_UPDATED: "Deployment updated",
   TASK_FAILED: "Task failed",
   TASK_RETRIED: "Task retried",
+  E2E_COVERAGE_DECIDED: "E2E coverage decided",
+  PR_COMMENT_POSTED: "E2E report posted",
 };
 
 const str = (v: unknown) => (typeof v === "string" || typeof v === "number" ? String(v) : null);
@@ -47,6 +49,10 @@ function summarize(event: Event): string | null {
       return str(p.decision);
     case "PR_CREATED":
       return p.number ? `#${str(p.number)}` : null;
+    case "E2E_COVERAGE_DECIDED":
+      return [p.covered ? "covered" : "missing", str(p.generatedSpecPath)].filter(Boolean).join(" · ");
+    case "PR_COMMENT_POSTED":
+      return str(p.url);
     case "MERGED":
       return str(p.sha)?.slice(0, 7) ?? null;
     case "DEPLOYMENT_UPDATED":

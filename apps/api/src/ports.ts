@@ -50,6 +50,14 @@ export interface GitHubService {
   listBranches(prefix: string): Promise<string[]>;
   getFileContent(path: string, ref: string): Promise<string | null>;
   connectionStatus(): Promise<{ ok: boolean; login?: string; error?: string }>;
+  createComment(pullNumber: number, body: string): Promise<{ id: number; url: string }>;
+  listComments(pullNumber: number): Promise<Array<{ id: number; body: string }>>;
+  updateComment(commentId: number, body: string): Promise<void>;
+  getPullRequestBody(pullNumber: number): Promise<string>;
+  updatePullRequestBody(pullNumber: number, body: string): Promise<void>;
+  // Uploads a binary (e.g. a Playwright .mp4) to GitHub so the PR comment can
+  // link a viewable asset instead of the control-plane artifact URL.
+  uploadVideoAsset(fileName: string, data: Uint8Array, contentType: string): Promise<{ url: string; name: string }>;
 }
 
 export interface DeployLookup {

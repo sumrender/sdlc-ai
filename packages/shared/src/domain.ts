@@ -27,7 +27,7 @@ export const REVIEWERS = [
 export const ReviewerSchema = z.enum(REVIEWERS);
 export type Reviewer = z.infer<typeof ReviewerSchema>;
 
-export const AGENTS = ["PLANNER", "DEVELOPER", ...REVIEWERS] as const;
+export const AGENTS = ["PLANNER", "DEVELOPER", "E2E_TEST_WRITER", ...REVIEWERS] as const;
 export const AgentSchema = z.enum(AGENTS);
 export type Agent = z.infer<typeof AgentSchema>;
 
@@ -88,6 +88,8 @@ export const EVENT_TYPES = [
   "DEPLOYMENT_UPDATED",
   "TASK_FAILED",
   "TASK_RETRIED",
+  "E2E_COVERAGE_DECIDED",
+  "PR_COMMENT_POSTED",
 ] as const;
 export const EventTypeSchema = z.enum(EVENT_TYPES);
 export type EventType = z.infer<typeof EventTypeSchema>;
@@ -151,6 +153,10 @@ export const TaskSchema = z.object({
   pullRequestUrl: z.string().nullable(),
   mergedCommitSha: z.string().nullable(),
   e2eRejectLoopUsed: z.boolean(),
+  e2eCoverageCheckedAt: iso.nullable(),
+  e2eGeneratedSpecPath: z.string().nullable(),
+  e2eReportCommentUrl: z.string().nullable(),
+  e2eReportVideoUrl: z.string().nullable(),
   pendingFeedback: z.string().nullable(),
   error: z.string().nullable(),
   stageEnteredAt: iso,
@@ -187,6 +193,8 @@ export const TestRunSchema = z.object({
   skipped: z.number().int().nullable(),
   durationMs: z.number().int().nullable(),
   error: z.string().nullable(),
+  coverageChecked: z.boolean().default(false),
+  generatedSpecPath: z.string().nullable().default(null),
   startedAt: iso.nullable(),
   completedAt: iso.nullable(),
   createdAt: iso,

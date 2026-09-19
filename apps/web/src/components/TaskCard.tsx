@@ -9,6 +9,7 @@ import { StatusBadge } from "./StatusBadge";
 export const AGENT_LABEL: Record<Agent, string> = {
   PLANNER: "Planner",
   DEVELOPER: "Developer",
+  E2E_TEST_WRITER: "E2E Test Writer",
   REVIEWER_SECURITY: "Security Reviewer",
   REVIEWER_ARCHITECTURE: "Architecture Reviewer",
   REVIEWER_QUALITY: "Quality Reviewer",

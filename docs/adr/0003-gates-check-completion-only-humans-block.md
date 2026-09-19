@@ -22,6 +22,11 @@ Every Gate in the pipeline checks that work *completed*, not that it *passed jud
   endpoint; no agent code path can create or decide one.
 - The two automatic loops that do exist are bounded and mechanical, not judgement-based:
   one Checks fix iteration inside a Developer run, and one E2E Reject loop per Task.
+- The E2E stage also runs a coverage step and, when the diff touches no spec, one
+  `E2E_TEST_WRITER` run before the first Test Run of each E2E visit. The writer shares
+  the existing loop budget: a writer `FAILED`/`TIMED_OUT` fails the Task outright (no
+  extra budget), and a subsequent suite failure uses the one E2E Reject loop with
+  feedback naming the generated spec. See ADR-0006.
 
 An unparseable Reviewer output is recorded as a `REJECT` with one `CRITICAL` Finding
 ("reviewer output invalid") so a flaky reviewer surfaces as visible evidence rather than a

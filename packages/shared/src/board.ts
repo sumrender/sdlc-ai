@@ -83,3 +83,17 @@ export const ApprovalDecidedPayloadSchema = z.object({
   feedback: z.string().nullable().optional(),
 });
 export type ApprovalDecidedPayload = z.infer<typeof ApprovalDecidedPayloadSchema>;
+
+export const E2ECoverageDecidedPayloadSchema = z.object({
+  covered: z.boolean(),
+  generatedSpecPath: z.string().nullable().optional(),
+  rationale: z.string().nullable().optional(),
+});
+export type E2ECoverageDecidedPayload = z.infer<typeof E2ECoverageDecidedPayloadSchema>;
+
+export const PRCommentPostedPayloadSchema = z.object({
+  url: z.string(),
+  videoUrl: z.string().nullable().optional(),
+  testRunId: z.string().nullable().optional(),
+});
+export type PRCommentPostedPayload = z.infer<typeof PRCommentPostedPayloadSchema>;

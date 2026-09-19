@@ -103,6 +103,7 @@ const AGENT_SCRIPT: Record<Agent, string[]> = {
   REVIEWER_ARCHITECTURE: ["Cloning at task branch", "[tool] read fe/src/components/GalleryHeader.tsx", "Verdict: PASS"],
   REVIEWER_QUALITY: ["Cloning at task branch", "[tool] read fe/e2e/gallery.spec.ts", "Verdict: PASS"],
   REVIEWER_PERFORMANCE: ["Cloning at task branch", "Measuring gallery render", "Verdict: PASS"],
+  E2E_TEST_WRITER: ["Cloning at task branch", "[tool] edit fe/e2e/generated-coverage.spec.ts", "Committing and pushing as sdlc-ai[bot]", "E2E spec ready"],
 };
 
 const REVIEW_OUTPUT: Record<Reviewer, { verdict: Verdict; findings: Finding[] }> = {
@@ -295,6 +296,8 @@ export function createFixtureApi(): FixtureApi {
       skipped: null,
       durationMs: null,
       error: null,
+      coverageChecked: true,
+      generatedSpecPath: null,
       startedAt: now(),
       completedAt: null,
       createdAt: now(),
@@ -652,6 +655,10 @@ function makeTask(input: CreateTaskInput, overrides: Partial<BoardTask> = {}): B
     pullRequestUrl: null,
     mergedCommitSha: null,
     e2eRejectLoopUsed: false,
+    e2eCoverageCheckedAt: null,
+    e2eGeneratedSpecPath: null,
+    e2eReportCommentUrl: null,
+    e2eReportVideoUrl: null,
     pendingFeedback: null,
     error: null,
     stageEnteredAt: at,
@@ -768,6 +775,8 @@ function seedDetail(task: BoardTask, state: DetailState) {
       skipped: 0,
       durationMs: pass ? 48_200 : 51_000,
       error: null,
+      coverageChecked: true,
+      generatedSpecPath: null,
       startedAt: minutesAgo(agoMinutes),
       completedAt: minutesAgo(agoMinutes - 1),
       createdAt: minutesAgo(agoMinutes),

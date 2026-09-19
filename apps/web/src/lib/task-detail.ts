@@ -4,6 +4,8 @@ import {
   TaskStatusChangedPayloadSchema,
   AgentRunStartedPayloadSchema,
   ApprovalDecidedPayloadSchema,
+  E2ECoverageDecidedPayloadSchema,
+  PRCommentPostedPayloadSchema,
   type AgentRun,
   type Artifact,
   type Event,
@@ -223,6 +225,26 @@ export function applyEventToDetail(detail: TaskDetail, event: Event): ApplyDetai
           deployments: base.deployments.map((d) => (d.id === deploymentId ? { ...d, status: to, url: url ?? d.url, lastPolledAt: event.createdAt } : d)),
         },
         reconcile: !known,
+      };
+    }
+    case "E2E_COVERAGE_DECIDED": {
+      const parsed = E2ECoverageDecidedPayloadSchema.safeParse(event.payload);
+      if (!parsed.success) return { detail: base, reconcile: false };
+      return {
+        detail: { ...base, e2eGeneratedSpecPath: parsed.data.generatedSpecPath ?? base.e2eGeneratedSpecPath },
+        reconcile: false,
+      };
+    }
+    case "PR_COMMENT_POSTED": {
+      const parsed = PRCommentPostedPayloadSchema.safeParse(event.payload);
+      if (!parsed.success) return { detail: base, reconcile: false };
+      return {
+        detail: {
+          ...base,
+          e2eReportCommentUrl: parsed.data.url ?? base.e2eReportCommentUrl,
+          e2eReportVideoUrl: parsed.data.videoUrl ?? base.e2eReportVideoUrl,
+        },
+        reconcile: false,
       };
     }
     default:

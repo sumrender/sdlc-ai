@@ -8,6 +8,13 @@
       "when": 1789805477456,
       "tag": "0000_ancient_squadron_sinister",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1789836548425,
+      "tag": "0001_cold_pixie",
+      "breakpoints": true
     }
   ]
 }

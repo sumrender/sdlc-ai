@@ -6,10 +6,12 @@ import { testRuns, type TestRunRow } from "../db/schema.js";
 import { AgentOutputError, SandboxError, TimeoutError, errorMessage } from "../errors.js";
 import { bus } from "../events/bus.js";
 import { loadManifest } from "../integrations/manifest.js";
+import type { ProjectManifest } from "@sdlc-ai/shared";
 import type { Sandbox } from "../ports.js";
 import { WORKSPACE } from "../sandbox/docker.js";
 import { prepareWorkspace } from "../sandbox/workspace.js";
 import { TIMEOUTS, type Deps } from "./deps.js";
+import { postE2EReport } from "./e2e-report.js";
 import { failTask, getProject, getTask, tail } from "./tasks.js";
 
 export async function startTestRun(deps: Deps, taskId: string, attempt = 1): Promise<TestRunRow> {
@@ -49,11 +51,14 @@ async function execute(deps: Deps, run: TestRunRow): Promise<void> {
     await prepareWorkspace(sandbox, deps.github, { ref: task.branchName, manifest, agents: [], log });
 
     const cwd = manifest.e2e.cwd === "." ? WORKSPACE : `${WORKSPACE}/${manifest.e2e.cwd}`;
-    log(`$ ${manifest.e2e.command}  (cwd ${cwd})`);
+    const forced = await forceVideoOn(sandbox, manifest, cwd, log);
+    const command = forced.command;
+    const env = { ...manifest.e2e.env, PLAYWRIGHT_VIDEO: "on" };
+    log(`$ ${command}  (cwd ${cwd})`);
     const started = Date.now();
-    const result = await sandbox.exec(manifest.e2e.command, {
+    const result = await sandbox.exec(command, {
       cwd,
-      env: manifest.e2e.env,
+      env,
       timeoutMs: TIMEOUTS.TEST_RUN,
       onLine: log,
     });
@@ -66,7 +71,8 @@ async function execute(deps: Deps, run: TestRunRow): Promise<void> {
     output = tail(combined, 20_000);
 
     const dest = await deps.artifacts.testRunDir(task.id, run.id);
-    for (const artifactPath of manifest.e2e.artifacts) {
+    const artifactPaths = withVideoDir(manifest, forced.videoDir);
+    for (const artifactPath of artifactPaths) {
       const copied = await sandbox.copyOut(`${WORKSPACE}/${artifactPath}`, dest);
       if (!copied) {
         log(`No artifacts found at ${artifactPath}`);
@@ -110,6 +116,19 @@ async function execute(deps: Deps, run: TestRunRow): Promise<void> {
     ...summary,
   });
 
+  if (status === "COMPLETED") {
+    // Report back to the PR after every finished suite (pass or fail).
+    // Failures here must never fail the task — the gate below owns that.
+    try {
+      const task = await getTask(run.taskId);
+      if (task?.pullRequestNumber) {
+        await postE2EReport(deps, { task, run: { ...run, status, exitCode, ...summary }, generatedSpecPath: task.e2eGeneratedSpecPath }, log);
+      }
+    } catch (e) {
+      log(`E2E PR report skipped: ${errorMessage(e)}`);
+    }
+  }
+
   if (willRetry) {
     await startTestRun(deps, run.taskId, run.attempt + 1);
     return;
@@ -132,4 +151,63 @@ export function parsePlaywrightSummary(text: string) {
 
 export function e2eFeedback(run: TestRunRow): string {
   return `The E2E Test Run failed (exit code ${run.exitCode ?? "n/a"}; ${run.passed ?? 0} passed, ${run.failed ?? 0} failed). Fix the failing tests or the code they cover. Output:\n\n${run.output ?? "(no output captured)"}`;
+}
+
+// --- Forced video -----------------------------------------------------------
+
+const OVERLAY_PATH = "/tmp/sdlc-pw.config.ts";
+
+export function isPlaywrightCommand(command: string): boolean {
+  return /playwright|test:e2e/i.test(command);
+}
+
+// Appends the conventional Playwright output dir for this run only when the
+// manifest does not already cover it. Never persisted to the manifest.
+export function withVideoDir(manifest: ProjectManifest, videoDir: string | null): string[] {
+  if (!videoDir) return manifest.e2e.artifacts;
+  const covered = manifest.e2e.artifacts.some((a) => a === videoDir || a.startsWith(`${videoDir}/`) || videoDir.startsWith(`${a}/`) || a === videoDir.split("/").pop());
+  return covered ? manifest.e2e.artifacts : [...manifest.e2e.artifacts, videoDir];
+}
+
+// Probes for a Playwright config without a video setting and, when found,
+// writes a temporary overlay config extending it with video/screenshot on.
+// Non-Playwright commands or any probe failure → env-only fallback (logged).
+export async function forceVideoOn(
+  sandbox: Sandbox,
+  manifest: ProjectManifest,
+  cwd: string,
+  log: (line: string) => void,
+): Promise<{ command: string; videoDir: string | null }> {
+  const fallback = { command: manifest.e2e.command, videoDir: videoDirFor(manifest) };
+  if (!isPlaywrightCommand(manifest.e2e.command)) {
+    log("Non-Playwright e2e command; video forced via env only");
+    return fallback;
+  }
+  if (manifest.e2e.command.includes("--config")) return fallback;
+  try {
+    const ls = await sandbox.exec(`ls playwright.config.* 2>/dev/null || ls config/playwright.* 2>/dev/null || true`, { cwd });
+    const configFile = ls.stdout.split("\n").map((s) => s.trim()).find(Boolean);
+    if (!configFile) {
+      log("No playwright config found; video forced via env only");
+      return fallback;
+    }
+    const content = await sandbox.exec(`cat ${configFile}`, { cwd });
+    if (/video\s*:/.test(content.stdout)) return fallback;
+    const overlay =
+      `// Temporary SDLC overlay: extends the project config with video on. Never committed.\n` +
+      `import base from '${cwd}/${configFile}';\n` +
+      `const b = (base as any)?.default ?? base as any;\n` +
+      `export default { ...b, use: { ...(b?.use ?? {}), video: 'retain-on-failure', screenshot: 'only-on-failure' } };\n`;
+    await sandbox.writeFile(OVERLAY_PATH, overlay);
+    log(`Forcing Playwright video via overlay config ${OVERLAY_PATH} (extends ${configFile})`);
+    return { command: `${manifest.e2e.command} --config ${OVERLAY_PATH}`, videoDir: fallback.videoDir };
+  } catch (e) {
+    log(`Video overlay probe failed; falling back to env injection: ${errorMessage(e)}`);
+    return fallback;
+  }
+}
+
+function videoDirFor(manifest: ProjectManifest): string | null {
+  if (!isPlaywrightCommand(manifest.e2e.command)) return null;
+  return manifest.e2e.cwd === "." ? "test-results" : `${manifest.e2e.cwd}/test-results`;
 }

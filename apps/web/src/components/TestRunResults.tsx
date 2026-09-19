@@ -19,7 +19,13 @@ export function TestRunResults({ task, onOpenLog, onOpenArtifact }: TestRunResul
   }
   return (
     <ul className="flex flex-col gap-3">
+      {task.e2eGeneratedSpecPath && (
+        <p className="text-xs text-sky-300">
+          Test added by E2E: <span className="font-mono">{task.e2eGeneratedSpecPath}</span>
+        </p>
+      )}
       {runs.map((run, index) => {
+        const specPath = run.generatedSpecPath ?? task.e2eGeneratedSpecPath;
         const artifacts = artifactsForTestRun(task, run.id);
         const report = findReport(artifacts);
         const media = artifacts.filter((a) => a.type === "SCREENSHOT" || a.type === "VIDEO");
@@ -56,6 +62,11 @@ export function TestRunResults({ task, onOpenLog, onOpenArtifact }: TestRunResul
               {media.map((a) => (
                 <Button key={a.id} variant="outline" size="sm" onClick={() => onOpenArtifact(a)} title={a.name}>
                   {a.type === "VIDEO" ? <Video /> : <ImageIcon />} {a.name.split("/").pop()}
+                  {specPath && isNewTestArtifact(a.name, specPath) && (
+                    <Badge variant="info" className="ml-1">
+                      New test
+                    </Badge>
+                  )}
                 </Button>
               ))}
               {!live && !report && media.length === 0 && <span className="self-center text-xs text-muted-foreground">No report or screenshots were copied out.</span>}
@@ -65,6 +76,17 @@ export function TestRunResults({ task, onOpenLog, onOpenArtifact }: TestRunResul
       })}
     </ul>
   );
+}
+
+/** True when an artifact filename shares its stem with the E2E-generated spec. */
+export function isNewTestArtifact(artifactName: string, specPath: string): boolean {
+  const stem = specPath
+    .split("/")
+    .pop()
+    ?.replace(/\.(spec|e2e)\.[a-z]+$/i, "")
+    .toLowerCase();
+  if (!stem) return false;
+  return artifactName.toLowerCase().includes(stem);
 }
 
 function Stat({ label, value, tone }: { label: string; value: number | string | null; tone?: string }) {

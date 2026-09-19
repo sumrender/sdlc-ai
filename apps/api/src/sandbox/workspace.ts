@@ -1,7 +1,8 @@
 import type { Agent, ProjectManifest } from "@sdlc-ai/shared";
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
-import { SandboxError, WorkspaceError } from "../errors.js";
+import { AgentOutputError, SandboxError, TimeoutError, WorkspaceError } from "../errors.js";
 import { TIMEOUTS } from "../pipeline/deps.js";
+import { tail } from "../pipeline/tasks.js";
 import type { GitHubService, Sandbox } from "../ports.js";
 import { WORKSPACE } from "./docker.js";
 import { shellQuote } from "./process.js";
@@ -44,6 +45,30 @@ export async function prepareWorkspace(sandbox: Sandbox, github: GitHubService, 
     const definition = AGENT_DEFINITIONS[agent];
     await sandbox.writeFile(`${WORKSPACE}/.opencode/agent/${definition.name}.md`, definition.content);
   }
+}
+
+// Shared commit+push used by the Developer and the E2E test writer.
+// Returns the committed sha, or null when there was nothing to commit.
+export async function commitAndPush(
+  sandbox: Sandbox,
+  github: GitHubService,
+  branch: string,
+  message: string,
+  log: (line: string) => void,
+): Promise<{ pushed: boolean; noChanges: boolean }> {
+  log("Committing and pushing as sdlc-ai[bot]");
+  const commit = await sandbox.exec(commitAndPushScript(github, branch, message), {
+    cwd: WORKSPACE,
+    timeoutMs: 5 * 60_000,
+    onLine: (line) => {
+      if (!line.includes("AUTHORIZATION")) log(line);
+    },
+  });
+  if (commit.timedOut) throw new TimeoutError("commit/push timed out");
+  if (commit.exitCode !== 0) throw new AgentOutputError(`commit/push failed: ${tail(commit.stderr, 2000)}`);
+  const noChanges = commit.stdout.includes("SDLC_NO_CHANGES");
+  if (noChanges) log("No new changes; branch already up to date");
+  return { pushed: !noChanges, noChanges };
 }
 
 // Removes injected agent files so they are never committed, then commits and pushes as the bot identity.

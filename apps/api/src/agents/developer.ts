@@ -7,7 +7,7 @@ import { loadManifest } from "../integrations/manifest.js";
 import { TIMEOUTS } from "../pipeline/deps.js";
 import { tail, updateTask } from "../pipeline/tasks.js";
 import { WORKSPACE } from "../sandbox/docker.js";
-import { commitAndPushScript, prepareWorkspace } from "../sandbox/workspace.js";
+import { commitAndPush, prepareWorkspace } from "../sandbox/workspace.js";
 import { AGENT_DEFINITIONS } from "./definitions.js";
 import { invokeAgent, type AgentBody, type RunContext } from "./runner.js";
 
@@ -48,19 +48,8 @@ export const developerBody: AgentBody = async (ctx) => {
   }
 
   log("Committing and pushing as sdlc-ai[bot]");
-  const commit = await sandbox.exec(commitAndPushScript(deps.github, branch, task.title), {
-    cwd: WORKSPACE,
-    timeoutMs: 5 * 60_000,
-    onLine: (line) => {
-      if (!line.includes("AUTHORIZATION")) log(line);
-    },
-  });
-  if (commit.timedOut) throw new TimeoutError("commit/push timed out");
-  if (commit.exitCode !== 0) throw new AgentOutputError(`commit/push failed: ${tail(commit.stderr, 2000)}`);
-
-  const noChanges = commit.stdout.includes("SDLC_NO_CHANGES");
+  const { noChanges } = await commitAndPush(sandbox, deps.github, branch, task.title, log);
   if (noChanges && !task.pullRequestNumber) throw new AgentOutputError("Developer produced no changes to commit");
-  if (noChanges) log("No new changes; branch already up to date");
 
   await updateTask(task.id, { pendingFeedback: null });
 

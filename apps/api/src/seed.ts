@@ -161,6 +161,8 @@ async function main() {
     const results = path.join(dest, "test-results", "gallery-shows-template-count");
     await fs.mkdir(results, { recursive: true });
     await fs.writeFile(path.join(results, pass ? "gallery-header.png" : "gallery-header-failed.png"), fakeScreenshotPng(pass));
+    // Stub video so the task detail video path is demonstrable (ArtifactViewer plays VIDEO).
+    await fs.writeFile(path.join(results, "gallery-shows-template-count-video.mp4"), "fake-mp4-bytes");
     await store.importDir({ taskId, testRunId, dir: path.join(dest, "test-results"), prefix: "fe/test-results" });
   };
 
