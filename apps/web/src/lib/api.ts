@@ -3,15 +3,18 @@ import {
   ApiErrorSchema,
   BoardTaskListSchema,
   BoardTaskSchema,
+  ProjectSettingsSchema,
   ResetDemoResultSchema,
   TaskDetailSchema,
   type AnswerQuestionInput,
   type BoardTask,
   type CreateTaskInput,
+  type DecideApprovalInput,
+  type ProjectSettings,
   type ResetDemoResult,
   type TaskDetail,
 } from "@sdlc-ai/shared";
-import type { ZodType } from "zod";
+import type { ZodType, ZodTypeDef } from "zod";
 
 export class ApiRequestError extends Error {
   constructor(
@@ -35,6 +38,10 @@ export interface ApiClient {
   getTask(taskId: string): Promise<TaskDetail>;
   retryTask(taskId: string): Promise<TaskDetail>;
   sendBackTask(taskId: string): Promise<TaskDetail>;
+  /** The human's decision at HUMAN REVIEW. Returns the Task after the workflow engine has acted on it. */
+  decideApproval(taskId: string, approvalId: string, input: DecideApprovalInput): Promise<TaskDetail>;
+  /** The Project, its GitHub connection, Deploy Targets, and the Manifest as read from the repository. */
+  getProjectSettings(): Promise<ProjectSettings>;
   /** Reads a text Artifact (a LOG or DIFF) in full. */
   fetchArtifactText(taskId: string, artifactId: string): Promise<string>;
   /** Absolute URL that streams an Artifact's bytes; used for images, reports, and downloads. */
@@ -49,7 +56,7 @@ export interface ApiClientOptions {
 }
 
 export function createApiClient({ origin, fetch = globalThis.fetch }: ApiClientOptions): ApiClient {
-  async function request<T>(path: string, schema: ZodType<T>, init?: RequestInit): Promise<T> {
+  async function request<T>(path: string, schema: ZodType<T, ZodTypeDef, unknown>, init?: RequestInit): Promise<T> {
     const res = await fetch(`${origin}${path}`, {
       ...init,
       headers: { "content-type": "application/json", ...init?.headers },
@@ -62,7 +69,7 @@ export function createApiClient({ origin, fetch = globalThis.fetch }: ApiClientO
     return parsed.data;
   }
 
-  const post = <T>(path: string, schema: ZodType<T>, body?: unknown) =>
+  const post = <T>(path: string, schema: ZodType<T, ZodTypeDef, unknown>, body?: unknown) =>
     request(path, schema, { method: "POST", body: body === undefined ? undefined : JSON.stringify(body) });
 
   return {
@@ -75,6 +82,8 @@ export function createApiClient({ origin, fetch = globalThis.fetch }: ApiClientO
     getTask: (taskId) => request(API_PATHS.task(taskId), TaskDetailSchema),
     retryTask: (taskId) => post(API_PATHS.retryTask(taskId), TaskDetailSchema),
     sendBackTask: (taskId) => post(API_PATHS.sendBackTask(taskId), TaskDetailSchema),
+    decideApproval: (taskId, approvalId, input) => post(API_PATHS.decideApproval(taskId, approvalId), TaskDetailSchema, input),
+    getProjectSettings: () => request(API_PATHS.project, ProjectSettingsSchema),
     fetchArtifactText: async (taskId, artifactId) => {
       const path = API_PATHS.artifactContent(taskId, artifactId);
       const res = await fetch(`${origin}${path}`);

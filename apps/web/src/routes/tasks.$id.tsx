@@ -1,15 +1,18 @@
 import { useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { ArrowLeft, MessageCircleQuestion, ShieldCheck } from "lucide-react";
-import type { Artifact, TaskDetail } from "@sdlc-ai/shared";
+import { ArrowLeft, MessageCircleQuestion } from "lucide-react";
+import { REVIEWERS, type Artifact, type TaskDetail } from "@sdlc-ai/shared";
 import { AgentActivity, runLabel } from "~/components/AgentActivity";
+import { DecidedApproval } from "~/components/ApprovalPanel";
 import { ArtifactViewer } from "~/components/ArtifactViewer";
 import { DeploymentStatus } from "~/components/DeploymentStatus";
 import { EventTimeline } from "~/components/EventTimeline";
 import { GitHubLinks } from "~/components/GitHubLinks";
+import { HumanReview } from "~/components/HumanReview";
 import { LogViewer } from "~/components/LogViewer";
 import { PlanViewer } from "~/components/PlanViewer";
 import { QuestionDialog } from "~/components/QuestionDialog";
+import { ReviewPanel, summarizeReviews } from "~/components/ReviewPanel";
 import { RunHistory } from "~/components/RunHistory";
 import { Section } from "~/components/Section";
 import { StageTimeline, STAGE_LABEL } from "~/components/StageTimeline";
@@ -17,6 +20,7 @@ import { StatusBadge } from "~/components/StatusBadge";
 import { TaskActions } from "~/components/TaskActions";
 import { TestRunResults } from "~/components/TestRunResults";
 import { Button } from "~/components/ui/button";
+import { useProjectSettings } from "~/lib/settings-query";
 import { buildTimeline, formatDateTime, logArtifactFor, type Run } from "~/lib/task-detail";
 import { useTaskLive, useTaskQuery } from "~/lib/task-query";
 
@@ -60,10 +64,15 @@ function TaskDetailView({ task, live }: { task: TaskDetail; live: ReturnType<typ
   const [openLog, setOpenLog] = useState<OpenLog | null>(null);
   const [openArtifact, setOpenArtifact] = useState<Artifact | null>(null);
   const [questionOpen, setQuestionOpen] = useState(false);
+  const settings = useProjectSettings();
 
   const pendingQuestion = task.questions.find((q) => q.status === "PENDING") ?? null;
-  const pendingApproval = task.approvals.find((a) => a.status === "PENDING") ?? null;
   const showDeployments = task.stage === "STAGING" || task.deployments.length > 0;
+  const humanReview = task.stage === "HUMAN_REVIEW";
+  const reviewerRuns = task.agentRuns.filter((r) => (REVIEWERS as readonly string[]).includes(r.agent));
+  const showReviews = !humanReview && (task.reviews.length > 0 || reviewerRuns.length > 0);
+  const decidedApprovals = humanReview ? [] : task.approvals.filter((a) => a.status !== "PENDING").sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const reviewSummary = summarizeReviews(task.reviews);
 
   const openRunLog = (run: Run) => {
     const artifact = logArtifactFor(task, run);
@@ -114,33 +123,60 @@ function TaskDetailView({ task, live }: { task: TaskDetail; live: ReturnType<typ
             </Button>
           </div>
         )}
-        {pendingApproval && (
-          <div className="flex items-center gap-2 rounded-md border border-amber-400/60 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
-            <ShieldCheck className="h-4 w-4 shrink-0" aria-hidden />
-            <span>Awaiting your Approval. The Human Review screen lands with issue #8.</span>
-          </div>
-        )}
       </header>
 
       <Section title="Stage timeline">
         <StageTimeline entries={buildTimeline(task)} status={task.status} />
       </Section>
 
+      {humanReview && (
+        <HumanReview
+          task={task}
+          onOpenLog={openRunLog}
+          onOpenText={(artifact, subtitle) => setOpenLog({ artifact, subtitle })}
+          onOpenArtifact={setOpenArtifact}
+          defaultBranch={settings.data?.project.defaultBranch}
+        />
+      )}
+
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="flex flex-col gap-4 lg:col-span-2">
           <Section title="Agent activity" flush>
             <AgentActivity task={task} activity={live.activity} onOpenLog={openRunLog} />
           </Section>
-          <Section title="Plan">
-            <PlanViewer plan={task.plan} pendingFeedback={task.pendingFeedback} />
-          </Section>
-          <Section title="Test Runs">
-            <TestRunResults
-              task={task}
-              onOpenLog={(artifact, run) => setOpenLog({ artifact, subtitle: `Test Run · attempt ${run.attempt}` })}
-              onOpenArtifact={setOpenArtifact}
-            />
-          </Section>
+          {showReviews && (
+            <Section
+              title="Reviews"
+              aside={
+                <span className="text-xs text-muted-foreground">
+                  {reviewSummary.completed} of 4 · {reviewSummary.passed} PASS · {reviewSummary.rejected} REJECT
+                </span>
+              }
+            >
+              <ReviewPanel
+                reviews={task.reviews}
+                agentRuns={task.agentRuns}
+                onOpenRun={(agentRunId) => {
+                  const run = task.agentRuns.find((r) => r.id === agentRunId);
+                  if (run) openRunLog({ kind: "agent", run });
+                }}
+              />
+            </Section>
+          )}
+          {!humanReview && (
+            <>
+              <Section title="Plan">
+                <PlanViewer plan={task.plan} pendingFeedback={task.pendingFeedback} />
+              </Section>
+              <Section title="Test Runs">
+                <TestRunResults
+                  task={task}
+                  onOpenLog={(artifact, run) => setOpenLog({ artifact, subtitle: `Test Run · attempt ${run.attempt}` })}
+                  onOpenArtifact={setOpenArtifact}
+                />
+              </Section>
+            </>
+          )}
           {showDeployments && (
             <Section title="Deployments">
               <DeploymentStatus deployments={task.deployments} />
@@ -151,6 +187,15 @@ function TaskDetailView({ task, live }: { task: TaskDetail; live: ReturnType<typ
           <Section title="GitHub">
             <GitHubLinks task={task} />
           </Section>
+          {decidedApprovals.length > 0 && (
+            <Section title="Approval">
+              <div className="flex flex-col gap-2">
+                {decidedApprovals.map((a) => (
+                  <DecidedApproval key={a.id} approval={a} />
+                ))}
+              </div>
+            </Section>
+          )}
           <Section title="Runs">
             <RunHistory task={task} onOpenLog={openRunLog} />
           </Section>

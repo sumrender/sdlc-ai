@@ -76,3 +76,10 @@ export const TaskCreatedPayloadSchema = z.object({
   task: BoardTaskSchema,
 });
 export type TaskCreatedPayload = z.infer<typeof TaskCreatedPayloadSchema>;
+
+export const ApprovalDecidedPayloadSchema = z.object({
+  approvalId: z.string(),
+  decision: z.enum(["APPROVED", "REJECTED"]),
+  feedback: z.string().nullable().optional(),
+});
+export type ApprovalDecidedPayload = z.infer<typeof ApprovalDecidedPayloadSchema>;
