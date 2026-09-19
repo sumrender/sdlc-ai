@@ -56,7 +56,7 @@ export const plannerBody: AgentBody = async (ctx) => {
         createdAt: new Date(),
       })
       .returning();
-    await bus.emit(task.id, "QUESTION_CREATED", { questionId: question!.id, text: question!.text, options: question!.options });
+    await bus.emit(task.id, "QUESTION_CREATED", { question: question! });
     const fresh = await getTask(task.id);
     if (fresh) await setStatus(fresh, "WAITING", { agent: "PLANNER", questionId: question!.id });
     log(`Question for operator: ${question!.text}`);

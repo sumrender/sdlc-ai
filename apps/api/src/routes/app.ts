@@ -1,12 +1,12 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { ZodType, ZodTypeDef } from "zod";
+import { API_PATHS } from "@sdlc-ai/shared";
 import { HttpError } from "../errors.js";
 import type { WorkflowService } from "../pipeline/workflow.js";
-import { artifactRoutes } from "./artifacts.js";
 import { eventRoutes } from "./events.js";
 import { projectRoutes } from "./project.js";
-import { approvalRoutes, questionRoutes, taskRoutes } from "./tasks.js";
+import { taskRoutes } from "./tasks.js";
 
 export function createApp(workflow: WorkflowService) {
   const app = new Hono();
@@ -20,17 +20,14 @@ export function createApp(workflow: WorkflowService) {
   });
   app.notFound((c) => c.json({ error: "Not Found" }, 404));
 
-  app.get("/health", (c) => c.json({ ok: true, at: new Date().toISOString() }));
-  app.route("/tasks", taskRoutes(workflow));
-  app.route("/questions", questionRoutes(workflow));
-  app.route("/approvals", approvalRoutes(workflow));
-  app.route("/project", projectRoutes(workflow));
-  app.route("/artifacts", artifactRoutes(workflow.deps.artifacts));
-  app.route("/events", eventRoutes());
-  app.post("/demo/run", async (c) => c.json(await workflow.runDemo(), 201));
-  app.post("/demo/reset", async (c) => {
+  app.get(API_PATHS.health, (c) => c.json({ ok: true, at: new Date().toISOString() }));
+  app.route(API_PATHS.tasks, taskRoutes(workflow, workflow.deps.artifacts));
+  app.route(API_PATHS.project, projectRoutes(workflow));
+  app.route(API_PATHS.events, eventRoutes());
+  app.post(API_PATHS.runDemo, async (c) => c.json(await workflow.runDemo(), 201));
+  app.post(API_PATHS.resetDemo, async (c) => {
     const body = await readJson(c.req.raw);
-    if ((body as { confirm?: unknown })?.confirm !== true) throw new HttpError(400, "Reset requires { \"confirm\": true }");
+    if ((body as { confirm?: unknown })?.confirm !== true) throw new HttpError(400, 'Reset requires { "confirm": true }');
     return c.json(await workflow.resetDemo());
   });
 

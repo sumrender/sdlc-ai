@@ -6,7 +6,7 @@ import {
   REVIEWERS,
   type CreateTaskInput,
   type DecideApprovalInput,
-  type Stage,
+  type ResetDemoResult,
 } from "@sdlc-ai/shared";
 import { developerBody } from "../agents/developer.js";
 import { plannerBody } from "../agents/planner.js";
@@ -283,7 +283,9 @@ export class WorkflowService {
         stageEnteredAt: new Date(),
       })
       .returning();
-    await bus.emit(id, "TASK_CREATED", { title: input.title, issueNumber: issue.number, issueUrl: issue.url, branchName });
+    await bus.emit(id, "TASK_CREATED", {
+      task: { ...task!, activeAgent: null, pendingQuestion: null, pendingApprovalId: null },
+    });
     return task!;
   }
 
@@ -325,7 +327,7 @@ export class WorkflowService {
     } else {
       await updateTask(taskId, { status: "RUNNING", error: null, stageEnteredAt: new Date() });
     }
-    await bus.emit(taskId, "TASK_STATUS_CHANGED", { from: "FAILED", to: "RUNNING", stage: task.stage });
+    await bus.emit(taskId, "TASK_STATUS_CHANGED", { status: "RUNNING", from: "FAILED", to: "RUNNING", stage: task.stage });
     await this.advance(taskId);
     return requireTask(taskId);
   }
@@ -340,8 +342,12 @@ export class WorkflowService {
     return requireTask(taskId);
   }
 
-  async answerQuestion(questionId: string, answer: string): Promise<TaskRow> {
-    const [question] = await db.select().from(questions).where(eq(questions.id, questionId)).limit(1);
+  async answerQuestion(taskId: string, questionId: string, answer: string): Promise<TaskRow> {
+    const [question] = await db
+      .select()
+      .from(questions)
+      .where(and(eq(questions.id, questionId), eq(questions.taskId, taskId)))
+      .limit(1);
     if (!question) throw new HttpError(404, "Question not found");
     if (question.status !== "PENDING") throw new HttpError(409, "Question already answered");
     await db.update(questions).set({ status: "ANSWERED", answer, answeredAt: new Date() }).where(eq(questions.id, questionId));
@@ -352,8 +358,12 @@ export class WorkflowService {
     return requireTask(question.taskId);
   }
 
-  async decideApproval(approvalId: string, input: DecideApprovalInput): Promise<TaskRow> {
-    const [approval] = await db.select().from(approvals).where(eq(approvals.id, approvalId)).limit(1);
+  async decideApproval(taskId: string, approvalId: string, input: DecideApprovalInput): Promise<TaskRow> {
+    const [approval] = await db
+      .select()
+      .from(approvals)
+      .where(and(eq(approvals.id, approvalId), eq(approvals.taskId, taskId)))
+      .limit(1);
     if (!approval) throw new HttpError(404, "Approval not found");
     if (approval.status !== "PENDING") throw new HttpError(409, "Approval already decided");
     const feedback = input.decision === "REJECTED" ? input.feedback : null;
@@ -370,35 +380,50 @@ export class WorkflowService {
     return this.start(task.id);
   }
 
-  async resetDemo(): Promise<{ closedIssues: number; closedPullRequests: number; deletedBranches: number; deletedTasks: number }> {
+  async resetDemo(): Promise<ResetDemoResult> {
     const all = await db.select().from(tasks);
-    let closedIssues = 0;
-    let closedPullRequests = 0;
+    let issuesClosed = 0;
+    let pullRequestsClosed = 0;
     for (const t of all) {
       if (t.mergedCommitSha) continue;
       if (t.pullRequestNumber) {
-        await this.deps.github.closePullRequest(t.pullRequestNumber).then(() => closedPullRequests++, logSwallow("close PR"));
+        await this.deps.github.closePullRequest(t.pullRequestNumber).then(() => pullRequestsClosed++, logSwallow("close PR"));
       }
       if (t.issueNumber) {
-        await this.deps.github.closeIssue(t.issueNumber).then(() => closedIssues++, logSwallow("close issue"));
+        await this.deps.github.closeIssue(t.issueNumber).then(() => issuesClosed++, logSwallow("close issue"));
       }
     }
     const branches = await this.deps.github.listBranches(BRANCH_PREFIX).catch(() => [] as string[]);
-    let deletedBranches = 0;
-    for (const b of branches) await this.deps.github.deleteBranch(b).then(() => deletedBranches++, logSwallow("delete branch"));
+    let branchesDeleted = 0;
+    for (const b of branches) await this.deps.github.deleteBranch(b).then(() => branchesDeleted++, logSwallow("delete branch"));
 
     await db.delete(tasks);
     await this.deps.artifacts.clear();
     this.chains.clear();
-    return { closedIssues, closedPullRequests, deletedBranches, deletedTasks: all.length };
+    return { tasksDeleted: all.length, issuesClosed, pullRequestsClosed, branchesDeleted };
   }
 
   // ---- Reads ------------------------------------------------------------
 
+  // BoardTask[]: each Task plus the active Agent and the Question/Approval a WAITING card is blocked on.
   async listTasks() {
     const rows = await db.select().from(tasks).orderBy(desc(tasks.createdAt));
-    const active = rows.find((t) => (ACTIVE_STAGES as readonly Stage[]).includes(t.stage)) ?? null;
-    return { tasks: rows, activeTask: active ? { id: active.id, title: active.title, stage: active.stage } : null };
+    if (rows.length === 0) return [];
+    const [activeRuns, pendingQuestions, pendingApprovals] = await Promise.all([
+      db
+        .select({ taskId: agentRuns.taskId, agent: agentRuns.agent })
+        .from(agentRuns)
+        .where(inArray(agentRuns.status, ["QUEUED", "RUNNING"]))
+        .orderBy(asc(agentRuns.createdAt)),
+      db.select().from(questions).where(eq(questions.status, "PENDING")),
+      db.select({ id: approvals.id, taskId: approvals.taskId }).from(approvals).where(eq(approvals.status, "PENDING")),
+    ]);
+    return rows.map((t) => ({
+      ...t,
+      activeAgent: activeRuns.find((r) => r.taskId === t.id)?.agent ?? null,
+      pendingQuestion: pendingQuestions.find((q) => q.taskId === t.id) ?? null,
+      pendingApprovalId: pendingApprovals.find((a) => a.taskId === t.id)?.id ?? null,
+    }));
   }
 
   async taskDetail(taskId: string) {
