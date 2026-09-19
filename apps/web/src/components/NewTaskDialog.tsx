@@ -51,7 +51,7 @@ export function NewTaskDialog({ open, onOpenChange }: { open: boolean; onOpenCha
             <Label htmlFor="new-task-description">Description</Label>
             <Textarea id="new-task-description" value={description} onChange={(e) => setDescription(e.target.value)} rows={5} />
           </div>
-          {create.error && <p className="text-sm text-red-300">{create.error.message}</p>}
+          {create.error && <p className="text-sm text-red-600">{create.error.message}</p>}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel

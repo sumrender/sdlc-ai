@@ -37,14 +37,14 @@ export function GitHubLinks({ task }: GitHubLinksProps) {
           <dd className="min-w-0 truncate font-mono text-xs">
             {value ? (
               href ? (
-                <a href={href} target="_blank" rel="noreferrer" className="text-sky-300 hover:underline" title={value}>
+                <a href={href} target="_blank" rel="noreferrer" className="text-blue-700 hover:underline" title={value}>
                   {value}
                 </a>
               ) : (
                 <span title={value}>{value}</span>
               )
             ) : (
-              <span className="font-sans text-muted-foreground/70">{pending}</span>
+              <span className="font-sans text-muted-foreground">{pending}</span>
             )}
           </dd>
         </div>

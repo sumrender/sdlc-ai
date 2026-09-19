@@ -35,11 +35,11 @@ export function LogViewer({ taskId, artifact, subtitle, onClose }: LogViewerProp
           </DialogDescription>
         </DialogHeader>
         <pre
-          className="min-h-40 flex-1 overflow-auto rounded-md border bg-black/40 p-3 font-mono text-[12px] leading-5 whitespace-pre-wrap break-words"
+          className="min-h-40 flex-1 overflow-auto rounded-lg border border-border bg-secondary/40 p-3 font-mono text-[12px] leading-5 whitespace-pre-wrap break-words"
           aria-busy={content.isPending}
         >
           {content.isPending && "Loading log…"}
-          {content.isError && <span className="text-red-300">Could not load the log: {content.error.message}</span>}
+          {content.isError && <span className="text-red-600">Could not load the log: {content.error.message}</span>}
           {content.data !== undefined && (content.data.length > 0 ? content.data : <span className="text-muted-foreground">(empty log)</span>)}
         </pre>
         {artifact && (

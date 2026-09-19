@@ -64,22 +64,20 @@ export function ApprovalPanel({ task, approval, defaultBranch }: ApprovalPanelPr
 
   return (
     <div className="flex flex-col gap-3">
-      <p className="text-sm text-muted-foreground">
+      <p className="text-[13px] text-muted-foreground">
         Approve merges {pr} into <span className="font-mono text-foreground">{defaultBranch ?? "the default branch"}</span> and moves the Task to STAGING.
         Reject sends it back to DEVELOPMENT with your feedback.
       </p>
 
       {!rejecting ? (
-        <div className="grid grid-cols-2 gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button
-            size="lg"
             onClick={() => setConfirmApprove(true)}
             disabled={busy}
-            className="bg-emerald-500 text-emerald-950 hover:bg-emerald-400 focus-visible:ring-emerald-300"
           >
             <Check /> {busy && decide.variables === "APPROVED" ? "Approving…" : "Approve"}
           </Button>
-          <Button size="lg" variant="outline" onClick={() => setRejecting(true)} disabled={busy} className="border-red-500/50 text-red-200 hover:bg-red-500/10 hover:text-red-100">
+          <Button variant="outline" onClick={() => setRejecting(true)} disabled={busy}>
             <X /> Reject
           </Button>
         </div>
@@ -91,8 +89,8 @@ export function ApprovalPanel({ task, approval, defaultBranch }: ApprovalPanelPr
             if (rejectInput.success) decide.mutate("REJECTED");
           }}
         >
-          <Label htmlFor="approval-feedback" className="text-red-200">
-            Feedback for the Developer <span className="text-red-300/80">(required)</span>
+          <Label htmlFor="approval-feedback">
+            Feedback for the Developer <span className="text-muted-foreground">(required)</span>
           </Label>
           <Textarea
             id="approval-feedback"
@@ -105,7 +103,7 @@ export function ApprovalPanel({ task, approval, defaultBranch }: ApprovalPanelPr
             aria-invalid={feedback.length > 0 && !rejectInput.success}
           />
           <div className="flex flex-col gap-2">
-            <p className={cn("text-[11px]", rejectInput.success ? "text-muted-foreground" : "text-red-300/80")}>
+            <p className={cn("text-[11px]", rejectInput.success ? "text-muted-foreground" : "text-red-600")}>
               {rejectInput.success ? "Sends the Task back to DEVELOPMENT." : "Write the feedback before submitting."}
             </p>
             <div className="flex justify-end gap-2">
@@ -121,7 +119,7 @@ export function ApprovalPanel({ task, approval, defaultBranch }: ApprovalPanelPr
       )}
 
       {decide.error && (
-        <p role="alert" className="text-xs text-red-300">
+        <p role="alert" className="text-xs text-red-600">
           {decide.error.message}
         </p>
       )}
@@ -137,9 +135,7 @@ export function ApprovalPanel({ task, approval, defaultBranch }: ApprovalPanelPr
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={() => decide.mutate("APPROVED")} className="bg-emerald-500 text-emerald-950 hover:bg-emerald-400">
-              Approve and merge
-            </AlertDialogAction>
+            <AlertDialogAction onClick={() => decide.mutate("APPROVED")}>Approve and merge</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -151,9 +147,9 @@ export function ApprovalPanel({ task, approval, defaultBranch }: ApprovalPanelPr
 export function DecidedApproval({ approval }: { approval: Approval }) {
   const approved = approval.status === "APPROVED";
   return (
-    <div className={cn("flex flex-col gap-2 rounded-md border p-3", approved ? "border-emerald-500/40 bg-emerald-500/[0.06]" : "border-red-500/40 bg-red-500/[0.06]")}>
+    <div className={cn("flex flex-col gap-2 rounded-lg border p-3", approved ? "border-emerald-200 bg-emerald-50" : "border-red-200 bg-red-50")}>
       <div className="flex items-center gap-2">
-        <ShieldCheck className={cn("h-4 w-4", approved ? "text-emerald-300" : "text-red-300")} aria-hidden />
+        <ShieldCheck className={cn("h-4 w-4", approved ? "text-emerald-600" : "text-red-600")} aria-hidden />
         <Badge variant={approved ? "success" : "destructive"}>{approval.status}</Badge>
         {approval.decidedAt && <span className="text-xs text-muted-foreground">{formatDateTime(approval.decidedAt)}</span>}
       </div>

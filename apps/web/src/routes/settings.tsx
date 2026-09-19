@@ -19,11 +19,16 @@ function SettingsPage() {
   const query = useProjectSettings();
 
   return (
-    <div className="flex flex-col gap-4 p-4 lg:p-6">
+    <div className="flex flex-col gap-3 p-4 lg:p-6">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-lg font-semibold">Settings</h1>
-          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+          <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-[13px] text-muted-foreground">
+            <span>sdlc-ai</span>
+            <span aria-hidden>/</span>
+            <span className="font-medium text-foreground">Settings</span>
+          </nav>
+          <h1 className="mt-1.5 text-xl font-semibold tracking-tight">Settings</h1>
+          <p className="mt-1 max-w-2xl text-[13px] text-muted-foreground">
             Everything on this page is read from the control plane and the Project's repository at request time. Nothing is hardcoded in the UI.
           </p>
         </div>
@@ -34,7 +39,7 @@ function SettingsPage() {
 
       {query.isPending && <p className="text-sm text-muted-foreground">Reading the Project…</p>}
       {query.isError && (
-        <p role="alert" className="rounded-md border border-destructive/60 bg-destructive/10 px-3 py-2 text-sm text-red-200">
+        <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
           Could not read the Project: {query.error.message}
         </p>
       )}
@@ -50,25 +55,25 @@ function SettingsView({ settings }: { settings: ProjectSettings }) {
   return (
     <>
       {!manifest.ok && (
-        <div role="alert" className="flex items-start gap-3 rounded-lg border border-amber-400/60 bg-amber-500/10 px-4 py-3">
-          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-300" aria-hidden />
+        <div role="alert" className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" aria-hidden />
           <div className="min-w-0">
-            <p className="text-sm font-semibold text-amber-200">Project Manifest missing or invalid</p>
-            <p className="mt-0.5 text-sm text-amber-100/90">
+            <p className="text-sm font-medium text-amber-800">Project Manifest missing or invalid</p>
+            <p className="mt-0.5 text-sm text-amber-800">
               The control plane cannot prepare a Workspace, run Checks, or run end-to-end tests until <span className="font-mono text-xs">{MANIFEST_PATH}</span> on{" "}
               <span className="font-mono text-xs">{project.defaultBranch}</span> is valid.
             </p>
-            <pre className="mt-2 whitespace-pre-wrap break-words rounded bg-black/30 px-2 py-1.5 font-mono text-xs text-amber-100">{manifest.error}</pre>
+            <pre className="mt-2 whitespace-pre-wrap break-words rounded-lg bg-amber-100/60 px-2 py-1.5 font-mono text-xs text-amber-900">{manifest.error}</pre>
           </div>
         </div>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-3 lg:grid-cols-2">
         <Section title="Project">
           <dl className="grid grid-cols-[8rem_minmax(0,1fr)] gap-y-2.5 text-sm">
             <Row label="Name">{project.name}</Row>
             <Row label="Repository">
-              <a href={repoUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-mono text-xs text-sky-300 hover:underline">
+              <a href={repoUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-mono text-xs text-blue-700 hover:underline">
                 {project.owner}/{project.repo} <ExternalLink className="h-3 w-3" aria-hidden />
               </a>
             </Row>
@@ -87,7 +92,7 @@ function SettingsView({ settings }: { settings: ProjectSettings }) {
           aside={github.ok ? <Badge variant="success">Connected</Badge> : <Badge variant="destructive">Not connected</Badge>}
         >
           <div className="flex items-start gap-3">
-            {github.ok ? <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-300" aria-hidden /> : <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-300" aria-hidden />}
+            {github.ok ? <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" aria-hidden /> : <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-600" aria-hidden />}
             <div className="min-w-0 text-sm">
               {github.ok ? (
                 <>
@@ -102,8 +107,8 @@ function SettingsView({ settings }: { settings: ProjectSettings }) {
                 </>
               ) : (
                 <>
-                  <p className="text-red-200">The control plane cannot reach GitHub.</p>
-                  {github.error && <pre className="mt-1.5 whitespace-pre-wrap break-words rounded bg-black/30 px-2 py-1.5 font-mono text-xs text-red-100">{github.error}</pre>}
+                  <p className="text-red-700">The control plane cannot reach GitHub.</p>
+                  {github.error && <pre className="mt-1.5 whitespace-pre-wrap break-words rounded-lg bg-red-50 px-2 py-1.5 font-mono text-xs text-red-700">{github.error}</pre>}
                 </>
               )}
             </div>
@@ -124,7 +129,7 @@ function SettingsView({ settings }: { settings: ProjectSettings }) {
                   <th className="pb-2 font-semibold">Provider credentials</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-border/60">
+              <tbody className="divide-y divide-border">
                 {project.deployTargets.map((t) => (
                   <tr key={t.target}>
                     <td className="py-2.5 pr-4 font-semibold">{t.target}</td>
@@ -132,7 +137,7 @@ function SettingsView({ settings }: { settings: ProjectSettings }) {
                     <td className="py-2.5 pr-4 font-mono text-xs">{t.pathPrefix}</td>
                     <td className="py-2.5 pr-4">
                       {t.url ? (
-                        <a href={t.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sky-300 hover:underline">
+                        <a href={t.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-blue-700 hover:underline">
                           {t.url} <ExternalLink className="h-3 w-3" aria-hidden />
                         </a>
                       ) : (
@@ -177,7 +182,7 @@ function SettingsView({ settings }: { settings: ProjectSettings }) {
             </Row>
             <Row label="Active Task">
               {settings.activeTask ? (
-                <Link to="/tasks/$id" params={{ id: settings.activeTask.id }} className="text-sky-300 hover:underline">
+                <Link to="/tasks/$id" params={{ id: settings.activeTask.id }} className="text-blue-700 hover:underline">
                   {settings.activeTask.title} <span className="text-xs text-muted-foreground">in {settings.activeTask.stage.replace("_", " ")}</span>
                 </Link>
               ) : (
@@ -198,7 +203,7 @@ function ManifestView({ manifest }: { manifest: Extract<ProjectSettings["manifes
       <CommandList title="Setup" commands={manifest.setup} empty="No setup commands. The Workspace is used as cloned." />
       <CommandList title="Checks" commands={manifest.checks} empty="No Checks. Nothing runs before commit." />
       <div>
-        <h3 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">End-to-end tests</h3>
+        <h3 className="text-[11px] font-medium text-muted-foreground">End-to-end tests</h3>
         <dl className="mt-2 flex flex-col gap-1.5 text-sm">
           <div>
             <dt className="text-xs text-muted-foreground">Command</dt>
@@ -229,13 +234,13 @@ function ManifestView({ manifest }: { manifest: Extract<ProjectSettings["manifes
 function CommandList({ title, commands, empty }: { title: string; commands: string[]; empty: string }) {
   return (
     <div>
-      <h3 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{title}</h3>
+      <h3 className="text-[11px] font-medium text-muted-foreground">{title}</h3>
       {commands.length === 0 ? (
         <p className="mt-2 text-xs text-muted-foreground">{empty}</p>
       ) : (
         <ol className="mt-2 flex flex-col gap-1">
           {commands.map((c, i) => (
-            <li key={i} className="rounded bg-black/30 px-2 py-1 font-mono text-xs">
+            <li key={i} className="rounded-lg bg-secondary px-2 py-1 font-mono text-xs">
               <span className="mr-2 select-none text-muted-foreground">$</span>
               {c}
             </li>

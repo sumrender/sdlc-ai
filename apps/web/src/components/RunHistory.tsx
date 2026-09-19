@@ -23,30 +23,30 @@ export function RunHistory({ task, onOpenLog }: RunHistoryProps) {
   const runs = allRuns(task);
   if (runs.length === 0) return <p className="text-sm text-muted-foreground">No runs yet.</p>;
   return (
-    <ul className="flex flex-col divide-y divide-border/60 text-sm">
+    <ul className="flex flex-col divide-y divide-border text-sm">
       {runs.map((entry) => {
         const { run } = entry;
         const log = logArtifactFor(task, entry);
         const live = run.status === "QUEUED" || run.status === "RUNNING";
         return (
           <li key={run.id} className="flex items-center gap-3 py-2 first:pt-0 last:pb-0">
-            {live ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-sky-300" aria-hidden /> : <span className="w-3.5 shrink-0" />}
+            {live ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-blue-600" aria-hidden /> : <span className="w-3.5 shrink-0" />}
             <div className="min-w-0 flex-1">
-              <p className="truncate">
+              <p className="truncate text-[13px]">
                 {runLabel(entry)} <span className="text-xs text-muted-foreground">attempt {run.attempt}</span>
               </p>
               <p className="truncate text-xs text-muted-foreground">
                 {run.startedAt ? formatTime(run.startedAt) : "queued"} · {formatDuration(runDuration(run))}
                 {entry.kind === "agent" && entry.run.model ? ` · ${entry.run.model}` : ""}
               </p>
-              {run.error && <p className="truncate text-xs text-red-300" title={run.error}>{run.error}</p>}
+              {run.error && <p className="truncate text-xs text-red-600" title={run.error}>{run.error}</p>}
             </div>
             <Badge variant={VARIANT[run.status]}>{run.status.replace("_", " ")}</Badge>
             {log ? (
               <button
                 type="button"
                 onClick={() => onOpenLog(entry)}
-                className="inline-flex items-center gap-1 text-xs text-sky-300 hover:underline"
+                className="inline-flex items-center gap-1 text-xs text-blue-700 hover:underline"
                 aria-label={`Open log of ${runLabel(entry)} attempt ${run.attempt}`}
               >
                 <FileText className="h-3.5 w-3.5" aria-hidden /> Log

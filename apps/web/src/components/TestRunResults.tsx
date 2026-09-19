@@ -33,21 +33,21 @@ export function TestRunResults({ task, onOpenLog, onOpenArtifact }: TestRunResul
         const passed = run.status === "COMPLETED" && run.exitCode === 0;
         const live = run.status === "QUEUED" || run.status === "RUNNING";
         return (
-          <li key={run.id} className={cn("rounded-md border p-3", index > 0 && "opacity-80")}>
+          <li key={run.id} className={cn("rounded-lg border border-border bg-card p-3", index > 0 && "opacity-80")}>
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant={live ? "info" : passed ? "success" : "destructive"}>{live ? run.status : passed ? "PASSED" : run.status === "COMPLETED" ? "FAILED" : run.status}</Badge>
+              <Badge variant={live ? "info" : passed ? "success" : "destructive"}>{live ? run.status : passed ? "Passed" : run.status === "COMPLETED" ? "Failed" : run.status}</Badge>
               <span className="text-xs text-muted-foreground">
                 Attempt {run.attempt} · <span className="font-mono">{run.command}</span>
                 {run.startedAt ? ` · ${formatDateTime(run.startedAt)}` : ""}
               </span>
             </div>
             <dl className="mt-3 grid grid-cols-4 gap-2 text-center">
-              <Stat label="Passed" value={run.passed} tone="text-emerald-300" />
-              <Stat label="Failed" value={run.failed} tone={run.failed ? "text-red-300" : undefined} />
+              <Stat label="Passed" value={run.passed} tone="text-emerald-700" />
+              <Stat label="Failed" value={run.failed} tone={run.failed ? "text-red-600" : undefined} />
               <Stat label="Skipped" value={run.skipped} />
               <Stat label="Duration" value={formatDuration(run.durationMs)} />
             </dl>
-            {run.error && <p className="mt-2 text-xs text-red-300">{run.error}</p>}
+            {run.error && <p className="mt-2 text-xs text-red-600">{run.error}</p>}
             <div className="mt-3 flex flex-wrap gap-2">
               {log && (
                 <Button variant="outline" size="sm" onClick={() => onOpenLog(log, run)}>
@@ -91,8 +91,8 @@ export function isNewTestArtifact(artifactName: string, specPath: string): boole
 
 function Stat({ label, value, tone }: { label: string; value: number | string | null; tone?: string }) {
   return (
-    <div className="rounded bg-black/30 px-2 py-1.5">
-      <dt className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</dt>
+    <div className="rounded-lg bg-secondary px-2 py-1.5">
+      <dt className="text-[10px] font-medium text-muted-foreground">{label}</dt>
       <dd className={cn("text-base font-semibold tabular-nums", tone)}>{value ?? "—"}</dd>
     </div>
   );

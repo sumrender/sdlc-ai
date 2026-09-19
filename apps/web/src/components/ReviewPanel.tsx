@@ -19,10 +19,10 @@ const REVIEWER_ICON: Record<Reviewer, LucideIcon> = {
 };
 
 const SEVERITY_CLASS: Record<Severity, string> = {
-  CRITICAL: "border-red-500/60 bg-red-600/30 text-red-100",
-  HIGH: "border-transparent bg-red-500/15 text-red-300",
-  MEDIUM: "border-transparent bg-amber-500/15 text-amber-300",
-  LOW: "border-transparent bg-sky-500/15 text-sky-300",
+  CRITICAL: "border-red-200 bg-red-100 text-red-800",
+  HIGH: "border-transparent bg-red-100 text-red-700",
+  MEDIUM: "border-transparent bg-amber-100 text-amber-800",
+  LOW: "border-transparent bg-blue-100 text-blue-700",
   INFO: "border-transparent bg-secondary text-muted-foreground",
 };
 
@@ -103,15 +103,15 @@ function ReviewCard({ reviewer, review, run, onOpenRun }: ReviewCardProps) {
     <article
       aria-label={`${REVIEWER_LABEL[reviewer]} Review`}
       className={cn(
-        "flex flex-col rounded-lg border bg-background/40",
-        rejected && "border-amber-400/50",
-        review?.verdict === "PASS" && "border-emerald-500/30",
+        "flex flex-col overflow-hidden rounded-lg border border-border bg-card",
+        rejected && "border-amber-300",
+        review?.verdict === "PASS" && "border-emerald-200",
       )}
     >
-      <header className="flex items-center justify-between gap-3 px-3.5 py-2.5">
+      <header className="flex items-center justify-between gap-3 bg-secondary/50 px-3.5 py-2.5">
         <div className="flex min-w-0 items-center gap-2">
-          <Icon className={cn("h-4 w-4 shrink-0", rejected ? "text-amber-300" : review ? "text-emerald-300" : "text-muted-foreground")} aria-hidden />
-          <h3 className="truncate text-sm font-semibold">{REVIEWER_LABEL[reviewer]}</h3>
+          <Icon className={cn("h-4 w-4 shrink-0", rejected ? "text-amber-600" : review ? "text-emerald-600" : "text-muted-foreground")} aria-hidden />
+          <h3 className="truncate text-[13px] font-medium">{REVIEWER_LABEL[reviewer]}</h3>
           {review && findings.length > 0 && (
             <span className="text-xs text-muted-foreground">
               {findings.length} {findings.length === 1 ? "Finding" : "Findings"}
@@ -134,15 +134,15 @@ function ReviewCard({ reviewer, review, run, onOpenRun }: ReviewCardProps) {
       </header>
 
       {rejected && (
-        <p className="border-t border-amber-400/20 bg-amber-500/[0.07] px-3.5 py-1.5 text-[11px] text-amber-200/90">
+        <p className="border-t border-amber-200 bg-amber-50 px-3.5 py-1.5 text-[11px] text-amber-800">
           Informational. A REJECT does not block the Task; your Approval decides.
         </p>
       )}
 
-      <div className="border-t border-border/60">
+      <div className="border-t border-border">
         {review ? (
           findings.length > 0 ? (
-            <ul className="divide-y divide-border/50">
+            <ul className="divide-y divide-border">
               {findings.map((finding, index) => (
                 <FindingRow key={index} finding={finding} />
               ))}
@@ -158,10 +158,10 @@ function ReviewCard({ reviewer, review, run, onOpenRun }: ReviewCardProps) {
       </div>
 
       {review && (
-        <footer className="flex items-center justify-between gap-3 border-t border-border/60 px-3.5 py-1.5 text-[11px] text-muted-foreground">
+        <footer className="flex items-center justify-between gap-3 border-t border-border bg-secondary/30 px-3.5 py-1.5 text-[11px] text-muted-foreground">
           <span>Reviewed {formatTime(review.createdAt)}</span>
           {onOpenRun && (
-            <button type="button" onClick={() => onOpenRun(review.agentRunId)} className="text-sky-300 hover:underline">
+            <button type="button" onClick={() => onOpenRun(review.agentRunId)} className="text-blue-700 hover:underline">
               Open run log
             </button>
           )}

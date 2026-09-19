@@ -36,26 +36,31 @@ export function AppHeader({ nav }: { nav?: ReactNode }) {
   const error = runDemo.error ?? resetDemo.error;
 
   return (
-    <header className="flex items-center justify-between gap-4 border-b border-border/60 px-4 py-3">
-      <div className="flex items-center gap-6">
-        <span className="text-sm font-semibold tracking-tight">sdlc-ai</span>
-        {nav}
-      </div>
-      <div className="flex items-center gap-2">
-        {error && (
-          <span role="alert" className="text-xs text-red-300">
-            {error.message}
+    <header className="sticky top-0 z-30 border-b border-border bg-card">
+      <div className="flex h-14 items-center gap-3 px-4">
+        <span className="flex items-center gap-2">
+          <span aria-hidden className="flex h-6 w-6 items-center justify-center rounded-md bg-[#f6821f] text-[11px] font-bold text-white">
+            S
           </span>
-        )}
-        <Button variant="secondary" size="sm" onClick={() => runDemo.mutate()} disabled={runDemo.isPending}>
-          <Play /> Run Demo
-        </Button>
-        <Button variant="outline" size="sm" onClick={() => setResetOpen(true)} disabled={resetDemo.isPending}>
-          <RotateCcw /> Reset Demo
-        </Button>
-        <Button size="sm" onClick={() => setNewTaskOpen(true)}>
-          <Plus /> New Task
-        </Button>
+          <span className="text-sm font-semibold tracking-tight">sdlc-ai</span>
+        </span>
+        {nav}
+        <div className="ml-auto flex items-center gap-2">
+          {error && (
+            <span role="alert" className="text-xs text-red-600">
+              {error.message}
+            </span>
+          )}
+          <Button variant="ghost" size="sm" onClick={() => runDemo.mutate()} disabled={runDemo.isPending}>
+            <Play /> Run Demo
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => setResetOpen(true)} disabled={resetDemo.isPending}>
+            <RotateCcw /> Reset
+          </Button>
+          <Button size="sm" onClick={() => setNewTaskOpen(true)}>
+            <Plus /> New Task
+          </Button>
+        </div>
       </div>
 
       <NewTaskDialog open={newTaskOpen} onOpenChange={setNewTaskOpen} />
