@@ -62,3 +62,7 @@ export function runProcess(bin: string, args: string[], options: ProcessOptions 
 export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
+
+export function shellQuoteIfNeeded(value: string): string {
+  return /^[A-Za-z0-9_\-./:=@]+$/.test(value) ? value : shellQuote(value);
+}

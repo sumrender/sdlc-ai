@@ -1,3 +1,3 @@
-export * from "./domain.js";
-export * from "./manifest.js";
-export * from "./api.js";
+export * from "./domain";
+export * from "./manifest";
+export * from "./api";

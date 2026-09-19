@@ -68,6 +68,11 @@ export async function failTask(taskId: string, error: string): Promise<void> {
   await bus.emit(taskId, "TASK_FAILED", { stage: task.stage, error });
 }
 
+export async function getAgentRun(id: string): Promise<AgentRunRow | null> {
+  const [run] = await db.select().from(agentRuns).where(eq(agentRuns.id, id)).limit(1);
+  return run ?? null;
+}
+
 export const isActiveRun = (status: RunStatus) => status === "QUEUED" || status === "RUNNING";
 export const isFailedRun = (status: RunStatus) => status === "FAILED" || status === "TIMED_OUT";
 
