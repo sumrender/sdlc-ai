@@ -77,6 +77,10 @@ async function main() {
   const workflow = new WorkflowService({ ...wireIntegrations(), artifacts: new ArtifactStore(env.ARTIFACTS_DIR) });
   const app = createApp(workflow);
 
+  const github = await workflow.deps.github.connectionStatus();
+  if (github.ok) console.log(`[api] GitHub connected as ${github.login} to ${env.GITHUB_OWNER}/${env.GITHUB_REPO}`);
+  else console.warn(`[api] GitHub check failed: ${github.error} — creating Tasks and Planning will fail until GITHUB_TOKEN is fixed`);
+
   if (env.SDLC_RESUME_ON_START) await workflow.recover();
   else console.warn("[api] SDLC_RESUME_ON_START=false — open Tasks are not resumed on boot");
   const ticker = setInterval(() => void workflow.pollStaging().catch((e) => console.error("[api] staging poll failed", e)), STAGING_POLL_MS);

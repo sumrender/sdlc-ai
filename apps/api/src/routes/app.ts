@@ -15,6 +15,10 @@ export function createApp(workflow: WorkflowService) {
 
   app.onError((err, c) => {
     if (err instanceof HttpError) return c.json({ error: err.message }, err.status as 400);
+    if (isGitHubError(err)) {
+      console.error(`[api] ${c.req.method} ${c.req.path} — GitHub ${err.status}: ${err.message}`);
+      return c.json({ error: `GitHub rejected the request (${err.status}): ${err.message}. Check GITHUB_TOKEN and its access to the Project repository.`, code: "GITHUB_ERROR" }, 502);
+    }
     console.error(`[api] ${c.req.method} ${c.req.path}`, err);
     return c.json({ error: "Internal Server Error" }, 500);
   });
@@ -35,6 +39,11 @@ export function createApp(workflow: WorkflowService) {
   });
 
   return app;
+}
+
+// Octokit throws RequestError with a numeric status and the failing request attached.
+function isGitHubError(err: unknown): err is Error & { status: number } {
+  return err instanceof Error && typeof (err as { status?: unknown }).status === "number" && "request" in err;
 }
 
 export async function readJson(request: Request): Promise<unknown> {
