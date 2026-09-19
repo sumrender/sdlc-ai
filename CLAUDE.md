@@ -1,4 +1,5 @@
 ## Agent skills
+- Use strict typescript. Don't use any
 
 ### Issue tracker
 

@@ -22,3 +22,36 @@ export const DEMO_TASK = {
   description:
     "Display the total number of available templates in the gallery page header so users can see how many templates exist at a glance.",
 } as const;
+
+export const ApiErrorSchema = z.object({
+  error: z.string(),
+  code: z.string().optional(),
+});
+export type ApiError = z.infer<typeof ApiErrorSchema>;
+
+export const ResetDemoResultSchema = z.object({
+  tasksDeleted: z.number().int(),
+  issuesClosed: z.number().int(),
+  pullRequestsClosed: z.number().int(),
+  branchesDeleted: z.number().int(),
+});
+export type ResetDemoResult = z.infer<typeof ResetDemoResultSchema>;
+
+/** REST and SSE paths, relative to the API origin. Shared so client and server never drift. */
+export const API_PATHS = {
+  health: "/health",
+  tasks: "/tasks",
+  task: (taskId: string) => `/tasks/${taskId}`,
+  startTask: (taskId: string) => `/tasks/${taskId}/start`,
+  retryTask: (taskId: string) => `/tasks/${taskId}/retry`,
+  sendBackTask: (taskId: string) => `/tasks/${taskId}/send-back`,
+  answerQuestion: (taskId: string, questionId: string) => `/tasks/${taskId}/questions/${questionId}/answer`,
+  decideApproval: (taskId: string, approvalId: string) => `/tasks/${taskId}/approvals/${approvalId}/decide`,
+  artifacts: (taskId: string) => `/tasks/${taskId}/artifacts`,
+  artifactContent: (taskId: string, artifactId: string) => `/tasks/${taskId}/artifacts/${artifactId}/content`,
+  project: "/project",
+  manifest: "/project/manifest",
+  runDemo: "/demo/run",
+  resetDemo: "/demo/reset",
+  events: "/events",
+} as const;
