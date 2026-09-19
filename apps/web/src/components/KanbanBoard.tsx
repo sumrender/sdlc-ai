@@ -12,9 +12,11 @@ import { TaskCard } from "./TaskCard";
 export interface KanbanBoardProps {
   /** Called when a WAITING card blocked on an Approval is clicked. */
   onOpenApproval: (task: BoardTask) => void;
+  /** Called when any other card is clicked; opens the Task detail. */
+  onOpenTask: (task: BoardTask) => void;
 }
 
-export function KanbanBoard({ onOpenApproval }: KanbanBoardProps) {
+export function KanbanBoard({ onOpenApproval, onOpenTask }: KanbanBoardProps) {
   const { client } = useApi();
   const queryClient = useQueryClient();
   const tasksQuery = useTasksQuery();
@@ -71,6 +73,7 @@ export function KanbanBoard({ onOpenApproval }: KanbanBoardProps) {
                       ? () => (task.pendingQuestion ? setQuestionFor(task.id) : onOpenApproval(task))
                       : undefined
                   }
+                  onOpen={() => onOpenTask(task)}
                 />
               ))}
             </KanbanColumn>

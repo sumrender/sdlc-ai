@@ -21,11 +21,15 @@ export interface TaskCardProps {
   start?: { availability: StartAvailability; onStart: () => void; pending: boolean };
   /** Present only for WAITING cards; opens the pending Question or Approval. */
   onOpenPending?: () => void;
+  /** Opens the Task detail page; used for every card that is not blocked on a Question or Approval. */
+  onOpen?: () => void;
 }
 
-export function TaskCard({ task, start, onOpenPending }: TaskCardProps) {
+export function TaskCard({ task, start, onOpenPending, onOpen }: TaskCardProps) {
   const waiting = task.status === "WAITING";
   const titleId = `task-${task.id}-title`;
+  const activate = waiting ? onOpenPending : onOpen;
+  const clickable = Boolean(activate);
 
   return (
     <motion.article
@@ -38,14 +42,25 @@ export function TaskCard({ task, start, onOpenPending }: TaskCardProps) {
       aria-labelledby={titleId}
       data-status={task.status}
       draggable={false}
-      onClick={waiting ? onOpenPending : undefined}
-      onKeyDown={waiting ? (e) => (e.key === "Enter" || e.key === " ") && onOpenPending?.() : undefined}
+      onClick={activate}
+      onKeyDown={
+        activate
+          ? (e) => {
+              if (e.target !== e.currentTarget) return;
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                activate();
+              }
+            }
+          : undefined
+      }
       role="article"
-      tabIndex={waiting ? 0 : undefined}
+      tabIndex={clickable ? 0 : undefined}
       className={cn(
         "select-none rounded-lg border bg-card p-3 text-card-foreground shadow-sm",
+        clickable && "cursor-pointer hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         waiting &&
-          "cursor-pointer border-amber-400/60 bg-amber-500/10 ring-1 ring-amber-400/40 hover:bg-amber-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300",
+          "border-amber-400/60 bg-amber-500/10 ring-1 ring-amber-400/40 hover:bg-amber-500/15 focus-visible:ring-amber-300",
         task.status === "FAILED" && "border-destructive/60",
       )}
     >

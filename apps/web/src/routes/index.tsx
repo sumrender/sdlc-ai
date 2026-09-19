@@ -7,5 +7,6 @@ export const Route = createFileRoute("/")({
 
 function BoardPage() {
   const navigate = useNavigate();
-  return <KanbanBoard onOpenApproval={(task) => void navigate({ to: "/tasks/$id", params: { id: task.id } })} />;
+  const openTask = (task: { id: string }) => void navigate({ to: "/tasks/$id", params: { id: task.id } });
+  return <KanbanBoard onOpenApproval={openTask} onOpenTask={openTask} />;
 }
