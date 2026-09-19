@@ -77,7 +77,8 @@ async function main() {
   const workflow = new WorkflowService({ ...wireIntegrations(), artifacts: new ArtifactStore(env.ARTIFACTS_DIR) });
   const app = createApp(workflow);
 
-  await workflow.recover();
+  if (env.SDLC_RESUME_ON_START) await workflow.recover();
+  else console.warn("[api] SDLC_RESUME_ON_START=false — open Tasks are not resumed on boot");
   const ticker = setInterval(() => void workflow.pollStaging().catch((e) => console.error("[api] staging poll failed", e)), STAGING_POLL_MS);
 
   const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { env } from "../env.js";
 import * as schema from "./schema.js";
 
-const client = postgres(env.DATABASE_URL, { max: 10 });
+const client = postgres(env.DATABASE_URL, { max: 10, onnotice: () => undefined });
 export const db = drizzle(client, { schema });
 export type Db = typeof db;
 

@@ -106,7 +106,7 @@ export class WorkflowService {
   // Gate: a Plan exists and no Question is PENDING.
   private async planning(task: TaskRow): Promise<boolean> {
     if (task.plan) {
-      await transition(task, "DEVELOPMENT", "RUNNING");
+      await transition(task, "DEVELOPMENT", "READY");
       return true;
     }
     if (await pendingQuestion(task.id, task.stageEnteredAt)) {
