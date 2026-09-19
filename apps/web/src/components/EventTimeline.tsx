@@ -63,12 +63,12 @@ function summarize(event: Event): string | null {
 }
 
 const TONE: Partial<Record<EventType, string>> = {
-  TASK_FAILED: "text-red-300",
-  AGENT_RUN_FAILED: "text-red-300",
-  TASK_STAGE_CHANGED: "text-sky-300",
-  MERGED: "text-emerald-300",
-  APPROVAL_DECIDED: "text-amber-300",
-  QUESTION_CREATED: "text-amber-300",
+  TASK_FAILED: "text-red-600",
+  AGENT_RUN_FAILED: "text-red-600",
+  TASK_STAGE_CHANGED: "text-blue-700",
+  MERGED: "text-emerald-700",
+  APPROVAL_DECIDED: "text-amber-700",
+  QUESTION_CREATED: "text-amber-700",
 };
 
 /** Every persisted Event for the Task, newest first. */

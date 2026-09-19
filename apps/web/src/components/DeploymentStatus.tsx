@@ -23,7 +23,7 @@ export function DeploymentStatus({ deployments }: DeploymentStatusProps) {
     return <p className="text-sm text-muted-foreground">The merged change touched no Deploy Target, so nothing is deploying.</p>;
   }
   return (
-    <ul className="flex flex-col divide-y divide-border/60">
+    <ul className="flex flex-col divide-y divide-border">
       {deployments.map((d) => {
         const inProgress = d.status === "PENDING" || d.status === "BUILDING";
         return (
@@ -37,16 +37,16 @@ export function DeploymentStatus({ deployments }: DeploymentStatusProps) {
             <span className="font-mono text-xs text-muted-foreground" title={d.commitSha}>
               {d.commitSha.slice(0, 7)}
             </span>
-            {d.providerRef && <span className="font-mono text-[11px] text-muted-foreground/70">{d.providerRef}</span>}
+            {d.providerRef && <span className="font-mono text-[11px] text-muted-foreground">{d.providerRef}</span>}
             <span className="ml-auto flex items-center gap-3 text-xs">
               {d.lastPolledAt && <span className="text-muted-foreground">polled {formatTime(d.lastPolledAt)}</span>}
               {d.url && (
-                <a href={d.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sky-300 hover:underline">
+                <a href={d.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-blue-700 hover:underline">
                   {new URL(d.url).host} <ExternalLink className="h-3 w-3" aria-hidden />
                 </a>
               )}
             </span>
-            {d.error && <p className="basis-full text-xs text-red-300">{d.error}</p>}
+            {d.error && <p className="basis-full text-xs text-red-600">{d.error}</p>}
           </li>
         );
       })}

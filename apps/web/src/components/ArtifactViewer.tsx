@@ -28,7 +28,7 @@ export function ArtifactViewer({ taskId, artifact, onClose }: ArtifactViewerProp
           </DialogDescription>
         </DialogHeader>
         {artifact && (
-          <div className="min-h-0 flex-1 overflow-auto rounded-md border bg-black/40">
+          <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-border bg-secondary/40">
             {artifact.type === "SCREENSHOT" ? (
               <img src={url} alt={artifact.name} className="mx-auto max-h-[65vh] object-contain" />
             ) : artifact.type === "VIDEO" ? (

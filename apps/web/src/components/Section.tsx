@@ -14,9 +14,9 @@ export interface SectionProps {
 /** A titled panel on the Task detail page. */
 export function Section({ title, aside, children, className, flush }: SectionProps) {
   return (
-    <section className={cn("flex flex-col rounded-lg border bg-card text-card-foreground", className)}>
-      <header className="flex items-center justify-between gap-3 border-b border-border/60 px-4 py-2.5">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</h2>
+    <section className={cn("flex flex-col overflow-hidden rounded-lg border border-border bg-card", className)}>
+      <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-2.5">
+        <h2 className="text-[13px] font-medium text-foreground">{title}</h2>
         {aside}
       </header>
       <div className={cn("min-h-0 flex-1", flush ? "" : "p-4")}>{children}</div>

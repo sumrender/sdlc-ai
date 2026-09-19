@@ -57,36 +57,35 @@ export function TaskCard({ task, start, onOpenPending, onOpen }: TaskCardProps) 
       role="article"
       tabIndex={clickable ? 0 : undefined}
       className={cn(
-        "select-none rounded-lg border bg-card p-3 text-card-foreground shadow-sm",
-        clickable && "cursor-pointer hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        waiting &&
-          "border-amber-400/60 bg-amber-500/10 ring-1 ring-amber-400/40 hover:bg-amber-500/15 focus-visible:ring-amber-300",
-        task.status === "FAILED" && "border-destructive/60",
+        "select-none rounded-lg border border-border bg-card p-3 text-card-foreground",
+        clickable && "cursor-pointer hover:border-input hover:bg-secondary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        waiting && "border-amber-300 bg-amber-50/60 hover:bg-amber-50 focus-visible:ring-amber-400",
+        task.status === "FAILED" && "border-red-300",
       )}
     >
       <div className="flex items-start justify-between gap-2">
-        <h3 id={titleId} className="text-sm font-medium leading-snug">
+        <h3 id={titleId} className="text-[13px] font-medium leading-snug">
           {task.title}
         </h3>
         <StatusBadge status={task.status} />
       </div>
 
       {task.status === "RUNNING" && task.activeAgent && (
-        <p className="mt-2 flex items-center gap-1.5 text-xs text-sky-300">
+        <p className="mt-2 flex items-center gap-1.5 text-xs text-blue-700">
           <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
           <span>{AGENT_LABEL[task.activeAgent]}</span>
         </p>
       )}
 
       {waiting && (
-        <p className="mt-2 flex items-center gap-1.5 text-xs text-amber-300">
+        <p className="mt-2 flex items-center gap-1.5 text-xs font-medium text-amber-700">
           {task.pendingQuestion ? <MessageCircleQuestion className="h-3.5 w-3.5" aria-hidden /> : <ShieldCheck className="h-3.5 w-3.5" aria-hidden />}
           <span>{task.pendingQuestion ? "Planner has a Question" : "Awaiting your Approval"}</span>
         </p>
       )}
 
       {task.status === "FAILED" && task.error && (
-        <p className="mt-2 line-clamp-2 text-xs text-red-300" title={task.error}>
+        <p className="mt-2 line-clamp-2 text-xs text-red-600" title={task.error}>
           {task.error}
         </p>
       )}

@@ -36,8 +36,7 @@ function TaskDetailPage() {
   if (query.isError) {
     return (
       <div className="p-6">
-        <BackLink />
-        <p role="alert" className="mt-4 text-sm text-red-300">
+        <p role="alert" className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
           Could not load the Task: {query.error.message}
         </p>
       </div>
@@ -79,58 +78,71 @@ function TaskDetailView({ task, live }: { task: TaskDetail; live: ReturnType<typ
   };
 
   return (
-    <div className="flex flex-col gap-4 p-4 lg:p-6">
-      <header className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-4">
-          <BackLink />
+    <div className="flex flex-col gap-3 p-4 lg:p-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-[13px] text-muted-foreground">
+            <Link to="/" className="hover:text-foreground hover:underline">
+              Board
+            </Link>
+            <span aria-hidden>/</span>
+            <span className="max-w-[40ch] truncate font-medium text-foreground">{task.title}</span>
+          </nav>
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+            <h1 className="text-xl font-semibold tracking-tight">{task.title}</h1>
+            <StatusBadge status={task.status} />
+          </div>
+          <p className="mt-1 text-[13px] text-muted-foreground">
+            in {STAGE_LABEL[task.stage]} · Created {formatDateTime(task.createdAt)} · entered {STAGE_LABEL[task.stage]} {formatDateTime(task.stageEnteredAt)}
+          </p>
+          {task.description && <p className="mt-2 max-w-3xl text-sm text-muted-foreground">{task.description}</p>}
+        </div>
+        <div className="flex shrink-0 flex-col items-end gap-2">
           {live.streamStatus === "reconnecting" && (
-            <span role="status" className="text-xs text-amber-300">
+            <span role="status" className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-800">
               Live updates disconnected. Reconnecting…
             </span>
           )}
-        </div>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-lg font-semibold leading-tight">{task.title}</h1>
-              <StatusBadge status={task.status} />
-              <span className="text-xs text-muted-foreground">in {STAGE_LABEL[task.stage]}</span>
-            </div>
-            {task.description && <p className="mt-1.5 max-w-3xl text-sm text-muted-foreground">{task.description}</p>}
-            <p className="mt-1.5 text-xs text-muted-foreground/70">
-              Created {formatDateTime(task.createdAt)} · entered {STAGE_LABEL[task.stage]} {formatDateTime(task.stageEnteredAt)}
-            </p>
-          </div>
           <TaskActions task={task} />
         </div>
+      </div>
 
-        {task.status === "FAILED" && task.error && (
-          <div role="alert" className="rounded-md border border-destructive/60 bg-destructive/10 px-3 py-2 text-sm text-red-200">
-            {task.error}
-          </div>
-        )}
-        {pendingQuestion && (
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-400/60 bg-amber-500/10 px-3 py-2 text-sm">
-            <p className="flex items-center gap-2 text-amber-200">
-              <MessageCircleQuestion className="h-4 w-4 shrink-0" aria-hidden />
-              <span>
-                The Planner has a Question: <span className="text-foreground">{pendingQuestion.text}</span>
-              </span>
-            </p>
-            <Button size="sm" onClick={() => setQuestionOpen(true)}>
-              Answer
-            </Button>
-          </div>
-        )}
-      </header>
+      {task.status === "FAILED" && task.error && (
+        <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+          {task.error}
+        </div>
+      )}
+      {pendingQuestion && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm">
+          <p className="flex items-center gap-2 text-amber-800">
+            <MessageCircleQuestion className="h-4 w-4 shrink-0" aria-hidden />
+            <span>
+              The Planner has a Question: <span className="font-medium text-foreground">{pendingQuestion.text}</span>
+            </span>
+          </p>
+          <Button size="sm" onClick={() => setQuestionOpen(true)}>
+            Answer
+          </Button>
+        </div>
+      )}
 
-      <Section title="Stage timeline">
-        <StageTimeline entries={buildTimeline(task)} status={task.status} />
-      </Section>
+      <div className="overflow-x-auto rounded-lg border border-border bg-card">
+        <div className="flex min-w-max items-center gap-1 border-b border-border bg-secondary/40 px-3 pt-2 text-[13px]">
+          <span className="rounded-t-md bg-card px-3 py-1.5 font-medium text-foreground shadow-[inset_0_1px_0_hsl(var(--border)),inset_1px_0_0_hsl(var(--border)),inset_-1px_0_0_hsl(var(--border))]">Overview</span>
+          <span className="px-3 py-1.5 text-muted-foreground">Plan</span>
+          <span className="px-3 py-1.5 text-muted-foreground">Reviews · {reviewSummary.passed}/{reviewSummary.completed}</span>
+          <span className="px-3 py-1.5 text-muted-foreground">Tests</span>
+          <span className="px-3 py-1.5 text-muted-foreground">Deployments</span>
+          <span className="px-3 py-1.5 text-muted-foreground">Activity</span>
+        </div>
+        <div className="p-4">
+          <StageTimeline entries={buildTimeline(task)} status={task.status} />
+        </div>
+      </div>
 
       <Section
         title="Decision"
-        aside={pendingApproval ? <span className="text-xs text-amber-300">Awaiting your decision</span> : undefined}
+        aside={pendingApproval ? <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800">Awaiting your decision</span> : undefined}
       >
         {pendingApproval ? (
           <div className="flex max-w-2xl flex-col gap-3">
@@ -154,8 +166,8 @@ function TaskDetailView({ task, live }: { task: TaskDetail; live: ReturnType<typ
         )}
       </Section>
 
-      <div className="grid gap-4 lg:grid-cols-3">
-        <div className="flex flex-col gap-4 lg:col-span-2">
+      <div className="grid gap-3 lg:grid-cols-3">
+        <div className="flex flex-col gap-3 lg:col-span-2">
           <Section title="Agent activity" flush>
             <AgentActivity task={task} activity={live.activity} onOpenLog={openRunLog} />
           </Section>
@@ -190,7 +202,7 @@ function TaskDetailView({ task, live }: { task: TaskDetail; live: ReturnType<typ
             <DeploymentStatus deployments={task.deployments} />
           </Section>
         </div>
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-3">
           <Section title="GitHub">
             <GitHubLinks task={task} />
             {diffs.length > 0 && (

@@ -39,9 +39,9 @@ export function AgentActivity({ task, activity, onOpenLog }: AgentActivityProps)
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between gap-3 px-4 py-2 text-xs">
+      <div className="flex items-center justify-between gap-3 px-4 py-2 text-[13px]">
         {live.length > 0 ? (
-          <p className="flex items-center gap-1.5 text-sky-300">
+          <p className="flex items-center gap-1.5 font-medium text-blue-700">
             <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
             <span>
               {live.map(runLabel).join(", ")} {live.length > 1 ? "are" : "is"} running
@@ -55,7 +55,7 @@ export function AgentActivity({ task, activity, onOpenLog }: AgentActivityProps)
           <p className="text-muted-foreground">No Agent Run yet. Start the Task from the Kanban.</p>
         )}
         {focus && live.length === 0 && (
-          <button type="button" onClick={() => onOpenLog(focus)} className="text-sky-300 hover:underline">
+          <button type="button" onClick={() => onOpenLog(focus)} className="text-blue-700 hover:underline">
             Open its log
           </button>
         )}
@@ -65,7 +65,7 @@ export function AgentActivity({ task, activity, onOpenLog }: AgentActivityProps)
         role="log"
         aria-live="polite"
         aria-label="Agent activity"
-        className="h-72 overflow-auto border-t border-border/60 bg-black/40 px-4 py-3 font-mono text-[12px] leading-5"
+        className="h-72 overflow-auto border-t border-border bg-secondary/40 px-4 py-3 font-mono text-[12px] leading-5"
       >
         {lines.length === 0 ? (
           <p className="text-muted-foreground">
@@ -74,8 +74,8 @@ export function AgentActivity({ task, activity, onOpenLog }: AgentActivityProps)
         ) : (
           lines.map((line) => (
             <div key={line.id} className="flex gap-3 whitespace-pre-wrap break-words">
-              <span className="shrink-0 select-none text-muted-foreground/70">{time(line.at)}</span>
-              {showRunTag && <span className="shrink-0 text-violet-300">{tagFor(line)}</span>}
+              <span className="shrink-0 select-none text-muted-foreground">{time(line.at)}</span>
+              {showRunTag && <span className="shrink-0 font-medium text-blue-700">{tagFor(line)}</span>}
               <span>{line.line}</span>
             </div>
           ))

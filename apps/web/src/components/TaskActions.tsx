@@ -40,7 +40,7 @@ export function TaskActions({ task }: TaskActionsProps) {
         </Button>
       )}
       {error && (
-        <span role="alert" className="text-xs text-red-300">
+        <span role="alert" className="text-xs text-red-600">
           {error.message}
         </span>
       )}
