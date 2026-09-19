@@ -18,10 +18,12 @@ Agents are invoked as one-shot processes:
 stdin, inside a fresh Sandbox per Agent Run. Waiting on a human is a Task Status
 (`WAITING`), never an Agent Run state: a Planner run that asks a Question *completes*, the
 Task parks, and the answer starts a second run in a new Sandbox that passes
-`--session <id>` to resume the same OpenCode session. Session storage is a named Docker
-volume mounted into every Sandbox so the second shot can find the first shot's session; the
-follow-up prompt also restates the Question and answer, so it still produces a valid Plan if
-the session cannot be resumed. The same pattern gives the Developer one Checks fix
+`--session <id>` to resume the same OpenCode session. Session storage is a per-Task Docker
+volume mounted only into Planner Sandboxes so the second shot can find the first shot's
+session; the follow-up prompt also restates the Question and answer, so it still produces a
+valid Plan if the session cannot be resumed. Every other agent runs on isolated storage:
+OpenCode's store is SQLite, and concurrent Sandboxes sharing one volume fail with
+"database is locked" (seen with the four parallel Reviewers). The same pattern gives the Developer one Checks fix
 iteration and each Reviewer one re-ask.
 
 `opencode run` is non-interactive, so an agent can never prompt for permission; read-only

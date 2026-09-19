@@ -25,8 +25,15 @@ export interface Sandbox {
   destroy(): Promise<void>;
 }
 
+export interface SandboxCreateOptions {
+  name: string;
+  // Named volume for OpenCode's session store. Only set for runs that must resume a session
+  // started in an earlier Sandbox; the store is SQLite and does not tolerate concurrent Sandboxes.
+  sessionVolume?: string;
+}
+
 export interface SandboxRunner {
-  create(options: { name: string }): Promise<Sandbox>;
+  create(options: SandboxCreateOptions): Promise<Sandbox>;
 }
 
 export interface GitHubService {

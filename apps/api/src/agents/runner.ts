@@ -53,6 +53,8 @@ async function execute(deps: Deps, run: AgentRunRow, body: AgentBody): Promise<v
     log(`Starting ${run.agent} (attempt ${run.attempt}, model ${run.model})`);
     sandbox = await deps.sandboxes.create({
       name: `sdlc-${run.agent.toLowerCase().replace(/_/g, "-")}-${run.id.slice(0, 8)}-a${run.attempt}`,
+      // The Planner's answer run resumes the question run's session from a new Sandbox.
+      sessionVolume: run.agent === "PLANNER" ? `sdlc-ai-opencode-${run.taskId}` : undefined,
     });
     await body({ deps, sandbox, log, run, task, project });
     log(`${run.agent} completed`);

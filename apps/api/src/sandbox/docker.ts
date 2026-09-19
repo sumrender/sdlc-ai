@@ -1,10 +1,10 @@
 import { SandboxError } from "../errors.js";
-import type { ExecOptions, ExecResult, Sandbox, SandboxRunner } from "../ports.js";
+import type { ExecOptions, ExecResult, Sandbox, SandboxCreateOptions, SandboxRunner } from "../ports.js";
 import { runProcess, shellQuote } from "./process.js";
 
 export const WORKSPACE = "/workspace";
 const CACHE_VOLUME = "sdlc-ai-cache";
-const OPENCODE_VOLUME = "sdlc-ai-opencode";
+const OPENCODE_DATA_DIR = "/root/.local/share/opencode";
 
 export class DockerSandboxRunner implements SandboxRunner {
   constructor(
@@ -12,17 +12,10 @@ export class DockerSandboxRunner implements SandboxRunner {
     private readonly dockerBin: string,
   ) {}
 
-  async create({ name }: { name: string }): Promise<Sandbox> {
-    const args = [
-      "run",
-      "-d",
-      "--rm",
-      "--name",
-      name,
-      "-v",
-      `${CACHE_VOLUME}:/cache`,
-      "-v",
-      `${OPENCODE_VOLUME}:/root/.local/share/opencode`,
+  async create({ name, sessionVolume }: SandboxCreateOptions): Promise<Sandbox> {
+    const args = ["run", "-d", "--rm", "--name", name, "-v", `${CACHE_VOLUME}:/cache`];
+    if (sessionVolume) args.push("-v", `${sessionVolume}:${OPENCODE_DATA_DIR}`);
+    args.push(
       "-e",
       "npm_config_cache=/cache/npm",
       "-e",
@@ -34,7 +27,7 @@ export class DockerSandboxRunner implements SandboxRunner {
       this.image,
       "sleep",
       "infinity",
-    ];
+    );
     let result: ExecResult;
     try {
       result = await runProcess(this.dockerBin, args);
