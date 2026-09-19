@@ -19,16 +19,16 @@ export interface TaskCardProps {
   task: BoardTask;
   /** Present only for TODO cards. */
   start?: { availability: StartAvailability; onStart: () => void; pending: boolean };
-  /** Present only for WAITING cards; opens the pending Question or Approval. */
+  /** Fallback when no onOpen is provided; the board always passes onOpen so every card opens its detail page. */
   onOpenPending?: () => void;
-  /** Opens the Task detail page; used for every card that is not blocked on a Question or Approval. */
+  /** Opens the Task detail page; used for every card in every stage and status. */
   onOpen?: () => void;
 }
 
 export function TaskCard({ task, start, onOpenPending, onOpen }: TaskCardProps) {
   const waiting = task.status === "WAITING";
   const titleId = `task-${task.id}-title`;
-  const activate = waiting ? onOpenPending : onOpen;
+  const activate = onOpen ?? onOpenPending;
   const clickable = Boolean(activate);
 
   return (

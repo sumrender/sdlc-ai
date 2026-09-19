@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { LayoutGroup } from "motion/react";
 import type { BoardTask } from "@sdlc-ai/shared";
@@ -6,22 +5,18 @@ import { groupTasksByStage, startAvailability } from "~/lib/board";
 import { upsertTask, useBoardEvents, useTasksQuery } from "~/lib/board-query";
 import { useApi } from "~/lib/api-context";
 import { KanbanColumn } from "./KanbanColumn";
-import { QuestionDialog } from "./QuestionDialog";
 import { TaskCard } from "./TaskCard";
 
 export interface KanbanBoardProps {
-  /** Called when a WAITING card blocked on an Approval is clicked. */
-  onOpenApproval: (task: BoardTask) => void;
-  /** Called when any other card is clicked; opens the Task detail. */
+  /** Called when any card is clicked; opens the Task detail page. */
   onOpenTask: (task: BoardTask) => void;
 }
 
-export function KanbanBoard({ onOpenApproval, onOpenTask }: KanbanBoardProps) {
+export function KanbanBoard({ onOpenTask }: KanbanBoardProps) {
   const { client } = useApi();
   const queryClient = useQueryClient();
   const tasksQuery = useTasksQuery();
   const streamStatus = useBoardEvents();
-  const [questionFor, setQuestionFor] = useState<string | null>(null);
 
   const start = useMutation({
     mutationFn: (taskId: string) => client.startTask(taskId),
@@ -29,7 +24,6 @@ export function KanbanBoard({ onOpenApproval, onOpenTask }: KanbanBoardProps) {
   });
 
   const tasks = tasksQuery.data ?? [];
-  const questionTask = questionFor ? tasks.find((t) => t.id === questionFor) : undefined;
 
   if (tasksQuery.isPending) {
     return <p className="p-6 text-sm text-muted-foreground">Loading Tasks…</p>;
@@ -68,11 +62,6 @@ export function KanbanBoard({ onOpenApproval, onOpenTask }: KanbanBoardProps) {
                         }
                       : undefined
                   }
-                  onOpenPending={
-                    task.status === "WAITING"
-                      ? () => (task.pendingQuestion ? setQuestionFor(task.id) : onOpenApproval(task))
-                      : undefined
-                  }
                   onOpen={() => onOpenTask(task)}
                 />
               ))}
@@ -80,16 +69,6 @@ export function KanbanBoard({ onOpenApproval, onOpenTask }: KanbanBoardProps) {
           ))}
         </div>
       </LayoutGroup>
-
-      {questionTask?.pendingQuestion && (
-        <QuestionDialog
-          key={questionTask.pendingQuestion.id}
-          task={questionTask}
-          question={questionTask.pendingQuestion}
-          open
-          onOpenChange={(open) => !open && setQuestionFor(null)}
-        />
-      )}
     </div>
   );
 }
