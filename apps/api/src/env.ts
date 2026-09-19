@@ -41,6 +41,8 @@ const EnvSchema = z.object({
   ARTIFACTS_DIR: withDefault("./artifacts"),
   // Replaces Docker, GitHub and deploy providers with scripted in-memory fakes.
   SDLC_FAKES: flag(),
+  // Set to false to leave seeded Tasks untouched on boot (frontend work against seed data).
+  SDLC_RESUME_ON_START: z.preprocess((v) => v !== "false" && v !== "0", z.boolean()),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

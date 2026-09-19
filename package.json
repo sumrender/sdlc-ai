@@ -4,11 +4,15 @@
   "packageManager": "pnpm@9.15.0",
   "scripts": {
     "dev": "pnpm -r --parallel dev",
+    "dev:local": "pnpm db:up && pnpm db:seed && pnpm dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "db:up": "docker compose up -d postgres",
     "db:generate": "pnpm --filter @sdlc-ai/api db:generate",
-    "db:migrate": "pnpm --filter @sdlc-ai/api db:migrate"
+    "db:migrate": "pnpm --filter @sdlc-ai/api db:migrate",
+    "db:seed": "pnpm --filter @sdlc-ai/api db:seed",
+    "sandbox:build": "docker build -t sdlc-ai-sandbox:local sandbox",
+    "sandbox:smoke": "bash sandbox/smoke.sh"
   },
   "devDependencies": {
     "typescript": "^5.7.0"
