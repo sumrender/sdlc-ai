@@ -104,11 +104,11 @@ export function ApprovalPanel({ task, approval, defaultBranch }: ApprovalPanelPr
             required
             aria-invalid={feedback.length > 0 && !rejectInput.success}
           />
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex flex-col gap-2">
             <p className={cn("text-[11px]", rejectInput.success ? "text-muted-foreground" : "text-red-300/80")}>
               {rejectInput.success ? "Sends the Task back to DEVELOPMENT." : "Write the feedback before submitting."}
             </p>
-            <div className="flex gap-2">
+            <div className="flex justify-end gap-2">
               <Button type="button" size="sm" variant="ghost" onClick={() => setRejecting(false)} disabled={busy}>
                 Cancel
               </Button>
