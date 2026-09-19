@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { ProjectSchema } from "./domain";
+import { ProjectManifestSchema } from "./manifest";
 
 export const CreateTaskInputSchema = z.object({
   title: z.string().trim().min(1).max(200),
@@ -55,3 +57,32 @@ export const API_PATHS = {
   resetDemo: "/demo/reset",
   events: "/events",
 } as const;
+
+// ---- Settings -------------------------------------------------------------
+
+export const GitHubConnectionSchema = z.object({
+  ok: z.boolean(),
+  login: z.string().optional(),
+  error: z.string().optional(),
+});
+export type GitHubConnection = z.infer<typeof GitHubConnectionSchema>;
+
+/** The Project Manifest as read from the repository, or why it could not be. */
+export const ManifestReadSchema = z.discriminatedUnion("ok", [
+  z.object({ ok: z.literal(true), manifest: ProjectManifestSchema }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+export type ManifestRead = z.infer<typeof ManifestReadSchema>;
+
+/** Response of GET /project: everything the Settings page shows. Nothing here is hardcoded in the UI. */
+export const ProjectSettingsSchema = z.object({
+  project: ProjectSchema,
+  github: GitHubConnectionSchema,
+  manifest: ManifestReadSchema,
+  deployProviders: z.object({ CLOUDFLARE: z.boolean(), RENDER: z.boolean() }),
+  models: z.object({ developer: z.string(), fast: z.string() }),
+  sandboxImage: z.string(),
+  fakes: z.boolean(),
+  activeTask: z.object({ id: z.string(), title: z.string(), stage: z.string() }).nullable(),
+});
+export type ProjectSettings = z.infer<typeof ProjectSettingsSchema>;

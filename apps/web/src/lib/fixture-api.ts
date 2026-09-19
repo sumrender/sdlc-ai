@@ -3,22 +3,30 @@ import {
   findBlockingTask,
   retryAvailability,
   sendBackAvailability,
+  REVIEWERS,
   type Agent,
   type AgentRun,
   type AnswerQuestionInput,
+  type Approval,
   type Artifact,
   type BoardTask,
   type CreateTaskInput,
+  type DecideApprovalInput,
   type Deployment,
   type Event,
   type EventType,
+  type Finding,
+  type ProjectSettings,
   type Question,
   type ResetDemoResult,
+  type Review,
+  type Reviewer,
   type SseMessage,
   type Stage,
   type TaskDetail,
   type TaskStatus,
   type TestRun,
+  type Verdict,
 } from "@sdlc-ai/shared";
 import { ApiRequestError, type ApiClient } from "./api";
 import { applyEventToTasks } from "./board";
@@ -56,6 +64,8 @@ interface DetailState {
   agentRuns: AgentRun[];
   testRuns: TestRun[];
   questions: Question[];
+  reviews: Review[];
+  approvals: Approval[];
   deployments: Deployment[];
   artifacts: Artifact[];
   events: Event[];
@@ -68,6 +78,8 @@ const emptyDetail = (): DetailState => ({
   agentRuns: [],
   testRuns: [],
   questions: [],
+  reviews: [],
+  approvals: [],
   deployments: [],
   artifacts: [],
   events: [],
@@ -87,11 +99,55 @@ const AGENT_SCRIPT: Record<Agent, string[]> = {
     "Committing and pushing as sdlc-ai[bot]",
     "Opened PR",
   ],
-  REVIEWER_SECURITY: ["Cloning at task branch", "[tool] read fe/src/components/GalleryHeader.tsx", "Checking for unsanitised rendering", "Verdict: PASS"],
+  REVIEWER_SECURITY: ["Cloning at task branch", "[tool] read fe/src/components/GalleryHeader.tsx", "Checking for unsanitised rendering", "Verdict: REJECT"],
   REVIEWER_ARCHITECTURE: ["Cloning at task branch", "[tool] read fe/src/components/GalleryHeader.tsx", "Verdict: PASS"],
   REVIEWER_QUALITY: ["Cloning at task branch", "[tool] read fe/e2e/gallery.spec.ts", "Verdict: PASS"],
   REVIEWER_PERFORMANCE: ["Cloning at task branch", "Measuring gallery render", "Verdict: PASS"],
 };
+
+const REVIEW_OUTPUT: Record<Reviewer, { verdict: Verdict; findings: Finding[] }> = {
+  REVIEWER_SECURITY: {
+    verdict: "REJECT",
+    findings: [
+      { severity: "HIGH", message: "templates.length is rendered without a null guard; a failed fetch renders a crash", file: "fe/src/components/GalleryHeader.tsx", line: 6 },
+      { severity: "MEDIUM", message: "Count text is interpolated into the heading without escaping; safe today, fragile if the label becomes user-supplied", file: "fe/src/components/GalleryHeader.tsx", line: 8 },
+    ],
+  },
+  REVIEWER_ARCHITECTURE: { verdict: "PASS", findings: [{ severity: "INFO", message: "Count derived in the component; fine at this size", file: "fe/src/components/GalleryHeader.tsx" }] },
+  REVIEWER_QUALITY: { verdict: "PASS", findings: [{ severity: "LOW", message: "Consider extracting the count label for i18n", file: "fe/src/components/GalleryHeader.tsx", line: 6 }] },
+  REVIEWER_PERFORMANCE: { verdict: "PASS", findings: [] },
+};
+
+const FIXTURE_SETTINGS: ProjectSettings = {
+  project: {
+    id: "fixture-project",
+    name: "meme",
+    owner: "sumrender",
+    repo: "meme",
+    defaultBranch: "main",
+    deployTargets: [
+      { target: "FE", provider: "CLOUDFLARE", pathPrefix: "fe/", url: "https://meme-fe.stage.example" },
+      { target: "BE", provider: "RENDER", pathPrefix: "be/", url: "https://meme-be.stage.example" },
+    ],
+    createdAt: new Date(Date.now() - 7 * 24 * 60 * 60_000).toISOString(),
+  },
+  github: { ok: true, login: "sdlc-ai[bot]" },
+  manifest: {
+    ok: true,
+    manifest: {
+      setup: ["npm ci", "npm ci --prefix fe"],
+      checks: ["npm run lint", "npm run build --prefix fe"],
+      e2e: { command: "npm run test:e2e", cwd: "fe", env: { CI: "1", BASE_URL: "http://localhost:5173" }, artifacts: ["fe/playwright-report", "fe/test-results"] },
+    },
+  },
+  deployProviders: { CLOUDFLARE: true, RENDER: false },
+  models: { developer: "claude-sonnet-5", fast: "claude-haiku-4-5-20251001" },
+  sandboxImage: "sdlc-ai-sandbox:local",
+  fakes: true,
+  activeTask: null,
+};
+
+const isReviewer = (agent: Agent): agent is Reviewer => (REVIEWERS as readonly Agent[]).includes(agent);
 
 export function createFixtureApi(): FixtureApi {
   let tasks: BoardTask[] = [];
@@ -174,6 +230,11 @@ export function createFixtureApi(): FixtureApi {
     Object.assign(run, { status, completedAt: now(), exitCode: status === "COMPLETED" ? 0 : 1 });
     saveLog(taskId, { agentRunId: runId }, `${run.agent.toLowerCase()}-attempt-${run.attempt}.log`);
     emit(taskId, status === "COMPLETED" ? "AGENT_RUN_COMPLETED" : "AGENT_RUN_FAILED", { agentRunId: runId, agent: run.agent, attempt: run.attempt, status });
+    if (status === "COMPLETED" && isReviewer(run.agent)) {
+      const review: Review = { id: crypto.randomUUID(), taskId, agentRunId: runId, reviewer: run.agent, ...REVIEW_OUTPUT[run.agent], createdAt: now() };
+      state.reviews.push(review);
+      emit(taskId, "REVIEW_COMPLETED", { reviewId: review.id, reviewer: review.reviewer, verdict: review.verdict, findingCount: review.findings.length });
+    }
   };
 
   const finishRunning = (taskId: string) => {
@@ -290,6 +351,7 @@ export function createFixtureApi(): FixtureApi {
 
   const openPr = (taskId: string) => {
     const task = find(taskId);
+    if (task.pullRequestNumber) return;
     const number = 120 + tasks.indexOf(task) + 1;
     const patch = {
       branchName: `sdlc/${taskId.slice(0, 8)}-${slugify(task.title)}`,
@@ -300,15 +362,16 @@ export function createFixtureApi(): FixtureApi {
     emit(taskId, "PR_CREATED", { number, url: patch.pullRequestUrl, branch: patch.branchName });
   };
 
-  const developAndReview = (taskId: string) =>
+  const requestApproval = (taskId: string) => {
+    moveTo(taskId, "HUMAN_REVIEW", "READY");
+    const approval: Approval = { id: crypto.randomUUID(), taskId, status: "PENDING", feedback: null, createdAt: now(), decidedAt: null };
+    detailOf(taskId).approvals.push(approval);
+    emit(taskId, "APPROVAL_REQUESTED", { approvalId: approval.id });
+  };
+
+  /** From the end of a Developer run: open the PR, run E2E, run the four Reviewers, then ask for an Approval. */
+  const testAndReview = (taskId: string) =>
     sequence([
-      () => {
-        patchTask(taskId, { plan: PLAN });
-        moveTo(taskId, "DEVELOPMENT", "RUNNING");
-        runAgent(taskId, "DEVELOPER");
-      },
-      () => undefined,
-      () => undefined,
       () => {
         openPr(taskId);
         moveTo(taskId, "E2E", "RUNNING");
@@ -322,11 +385,54 @@ export function createFixtureApi(): FixtureApi {
       () => runAgent(taskId, "REVIEWER_QUALITY"),
       () => runAgent(taskId, "REVIEWER_PERFORMANCE"),
       () => undefined,
+      () => requestApproval(taskId),
+    ]);
+
+  const develop = (taskId: string) =>
+    sequence([
       () => {
-        moveTo(taskId, "HUMAN_REVIEW", "READY");
-        emit(taskId, "APPROVAL_REQUESTED", { approvalId: crypto.randomUUID() });
+        moveTo(taskId, "DEVELOPMENT", "RUNNING");
+        runAgent(taskId, "DEVELOPER");
+      },
+      () => undefined,
+      () => undefined,
+      () => testAndReview(taskId),
+    ]);
+
+  const developAndReview = (taskId: string) => {
+    patchTask(taskId, { plan: PLAN });
+    develop(taskId);
+  };
+
+  const deploy = (taskId: string) => {
+    const task = find(taskId);
+    const deployment: Deployment = {
+      id: crypto.randomUUID(),
+      taskId,
+      target: "FE",
+      provider: "CLOUDFLARE",
+      commitSha: task.mergedCommitSha ?? "",
+      providerRef: `cf-build-${taskId.slice(0, 4)}`,
+      status: "PENDING",
+      url: null,
+      error: null,
+      lastPolledAt: null,
+      createdAt: now(),
+    };
+    detailOf(taskId).deployments.push(deployment);
+    const update = (to: Deployment["status"], url: string | null) => {
+      Object.assign(deployment, { status: to, url, lastPolledAt: now() });
+      emit(taskId, "DEPLOYMENT_UPDATED", { deploymentId: deployment.id, target: deployment.target, provider: deployment.provider, to, url });
+    };
+    sequence([
+      () => update("BUILDING", null),
+      () => undefined,
+      () => {
+        update("LIVE", "https://meme-fe.stage.example");
+        emit(taskId, "TASK_STATUS_CHANGED", { status: "COMPLETED", from: "RUNNING", to: "COMPLETED", stage: "STAGING" });
       },
     ]);
+  };
 
   const toDetail = (taskId: string): TaskDetail => {
     const task = find(taskId);
@@ -337,8 +443,8 @@ export function createFixtureApi(): FixtureApi {
       agentRuns: [...state.agentRuns],
       testRuns: [...state.testRuns],
       questions: [...state.questions],
-      reviews: [],
-      approvals: [],
+      reviews: [...state.reviews],
+      approvals: [...state.approvals],
       deployments: [...state.deployments],
       artifacts: [...state.artifacts],
       events: [...state.events],
@@ -412,6 +518,30 @@ export function createFixtureApi(): FixtureApi {
       moveTo(taskId, "DEVELOPMENT", "RUNNING");
       runAgent(taskId, "DEVELOPER");
       return toDetail(taskId);
+    },
+    decideApproval: async (taskId, approvalId, input: DecideApprovalInput) => {
+      const task = find(taskId);
+      const approval = detailOf(taskId).approvals.find((a) => a.id === approvalId);
+      if (!approval) throw new ApiRequestError(404, "Approval not found", "NOT_FOUND");
+      if (approval.status !== "PENDING") throw new ApiRequestError(409, "Approval already decided", "APPROVAL_DECIDED");
+      const feedback = input.decision === "REJECTED" ? input.feedback : null;
+      Object.assign(approval, { status: input.decision, feedback, decidedAt: now() });
+      emit(taskId, "APPROVAL_DECIDED", { approvalId, decision: input.decision, feedback });
+      if (input.decision === "APPROVED") {
+        const sha = Array.from(crypto.getRandomValues(new Uint8Array(20)), (b) => b.toString(16).padStart(2, "0")).join("");
+        patchTask(taskId, { mergedCommitSha: sha });
+        emit(taskId, "MERGED", { sha, pullRequestNumber: task.pullRequestNumber, changedFiles: ["fe/src/components/GalleryHeader.tsx"] });
+        moveTo(taskId, "STAGING", "RUNNING");
+        after(STEP_MS, () => deploy(taskId));
+      } else {
+        patchTask(taskId, { pendingFeedback: feedback });
+        develop(taskId);
+      }
+      return toDetail(taskId);
+    },
+    getProjectSettings: async () => {
+      const active = tasks.find((t) => t.stage !== "TODO" && t.stage !== "STAGING") ?? null;
+      return { ...FIXTURE_SETTINGS, activeTask: active ? { id: active.id, title: active.title, stage: active.stage } : null };
     },
     fetchArtifactText: async (taskId, artifactId) => {
       const content = detailOf(taskId).logs.get(artifactId);
@@ -563,6 +693,18 @@ function seedTasks(): BoardTask[] {
         stageEnteredAt: minutesAgo(46),
       },
     ),
+    makeTask(
+      { title: "Show the template count in the gallery header (rehearsal)", description: "Second rehearsal of the demo task." },
+      {
+        stage: "HUMAN_REVIEW",
+        status: "WAITING",
+        plan: PLAN,
+        pullRequestNumber: 120,
+        pullRequestUrl: "https://github.com/sumrender/meme/pull/120",
+        createdAt: minutesAgo(55),
+        stageEnteredAt: minutesAgo(15),
+      },
+    ),
     makeTask({ title: "Fix flaky template search on empty query", description: "" }, { createdAt: minutesAgo(60) }),
     makeTask({ title: "Paginate the template gallery", description: "" }, { createdAt: minutesAgo(30) }),
   ];
@@ -574,7 +716,7 @@ function seedDetail(task: BoardTask, state: DetailState) {
   const age = (Date.now() - Date.parse(task.createdAt)) / 60_000;
   const event = (type: EventType, payload: Record<string, unknown>, agoMinutes: number) =>
     state.events.push({ id: crypto.randomUUID(), taskId: task.id, type, payload, createdAt: minutesAgo(agoMinutes) });
-  const run = (agent: Agent, agoMinutes: number, durationMinutes: number, lines: string[], status: AgentRun["status"] = "COMPLETED") => {
+  const run = (agent: Agent, agoMinutes: number, durationMinutes: number, lines: string[], status: AgentRun["status"] = "COMPLETED"): AgentRun => {
     const row: AgentRun = {
       id: crypto.randomUUID(),
       taskId: task.id,
@@ -608,6 +750,7 @@ function seedDetail(task: BoardTask, state: DetailState) {
     artifact.sizeBytes = content.length;
     state.artifacts.push(artifact);
     state.logs.set(artifact.id, content);
+    return row;
   };
   const tests = (pass: boolean, agoMinutes: number) => {
     const output = pass
@@ -670,13 +813,25 @@ function seedDetail(task: BoardTask, state: DetailState) {
 
   tests(true, age - 20);
   stage("E2E", "AGENT_REVIEW", age - 22);
-  for (const reviewer of ["REVIEWER_SECURITY", "REVIEWER_ARCHITECTURE", "REVIEWER_QUALITY", "REVIEWER_PERFORMANCE"] as const) {
-    run(reviewer, age - 23, 2, ["Cloning at task branch", "Verdict: PASS"]);
+  for (const reviewer of REVIEWERS) {
+    const r = run(reviewer, age - 23, 2, ["Cloning at task branch", `Verdict: ${REVIEW_OUTPUT[reviewer].verdict}`]);
+    const review: Review = { id: crypto.randomUUID(), taskId: task.id, agentRunId: r.id, reviewer, ...REVIEW_OUTPUT[reviewer], createdAt: minutesAgo(age - 25) };
+    state.reviews.push(review);
+    event("REVIEW_COMPLETED", { reviewId: review.id, reviewer, verdict: review.verdict, findingCount: review.findings.length }, age - 25);
   }
   stage("AGENT_REVIEW", "HUMAN_REVIEW", age - 26);
-  const approvalId = crypto.randomUUID();
-  event("APPROVAL_REQUESTED", { approvalId }, age - 26);
-  event("APPROVAL_DECIDED", { approvalId, decision: "APPROVED", feedback: null }, age - 40);
+  if (task.stage === "HUMAN_REVIEW") {
+    const pending: Approval = { id: crypto.randomUUID(), taskId: task.id, status: "PENDING", feedback: null, createdAt: minutesAgo(age - 26), decidedAt: null };
+    state.approvals.push(pending);
+    event("APPROVAL_REQUESTED", { approvalId: pending.id }, age - 26);
+    event("TASK_STATUS_CHANGED", { status: "WAITING", from: "RUNNING", to: "WAITING", stage: "HUMAN_REVIEW" }, age - 26);
+    Object.assign(task, { pendingApprovalId: pending.id });
+    return;
+  }
+  const approval: Approval = { id: crypto.randomUUID(), taskId: task.id, status: "APPROVED", feedback: null, createdAt: minutesAgo(age - 26), decidedAt: minutesAgo(age - 40) };
+  state.approvals.push(approval);
+  event("APPROVAL_REQUESTED", { approvalId: approval.id }, age - 26);
+  event("APPROVAL_DECIDED", { approvalId: approval.id, decision: "APPROVED", feedback: null }, age - 40);
   event("MERGED", { sha: task.mergedCommitSha, pullRequestNumber: task.pullRequestNumber, changedFiles: ["fe/src/components/SettingsDrawer.tsx"] }, age - 41);
   stage("HUMAN_REVIEW", "STAGING", age - 41);
   const deployment: Deployment = {

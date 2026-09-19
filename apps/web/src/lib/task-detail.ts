@@ -3,6 +3,7 @@ import {
   TaskStageChangedPayloadSchema,
   TaskStatusChangedPayloadSchema,
   AgentRunStartedPayloadSchema,
+  ApprovalDecidedPayloadSchema,
   type AgentRun,
   type Artifact,
   type Event,
@@ -196,6 +197,20 @@ export function applyEventToDetail(detail: TaskDetail, event: Event): ApplyDetai
         createdAt: event.createdAt,
       };
       return { detail: { ...base, status: "RUNNING", agentRuns: [...base.agentRuns, stub] }, reconcile: true };
+    }
+    case "APPROVAL_DECIDED": {
+      // Patch the Approval so the decision shows the instant it lands; the Transition follows as its own Event.
+      const parsed = ApprovalDecidedPayloadSchema.safeParse(event.payload);
+      if (!parsed.success) return { detail: base, reconcile: true };
+      const { approvalId, decision, feedback } = parsed.data;
+      const known = base.approvals.some((a) => a.id === approvalId);
+      return {
+        detail: {
+          ...base,
+          approvals: base.approvals.map((a) => (a.id === approvalId ? { ...a, status: decision, feedback: feedback ?? null, decidedAt: event.createdAt } : a)),
+        },
+        reconcile: !known,
+      };
     }
     case "DEPLOYMENT_UPDATED": {
       const parsed = DeploymentUpdatedPayloadSchema.safeParse(event.payload);
