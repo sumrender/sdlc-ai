@@ -1,28 +1,37 @@
 import {
   DEMO_TASK,
   findBlockingTask,
+  retryAvailability,
+  sendBackAvailability,
   type Agent,
+  type AgentRun,
   type AnswerQuestionInput,
+  type Artifact,
   type BoardTask,
   type CreateTaskInput,
+  type Deployment,
   type Event,
   type EventType,
   type Question,
   type ResetDemoResult,
   type SseMessage,
   type Stage,
+  type TaskDetail,
   type TaskStatus,
+  type TestRun,
 } from "@sdlc-ai/shared";
 import { ApiRequestError, type ApiClient } from "./api";
 import { applyEventToTasks } from "./board";
 import type { EventSourceLike } from "./event-stream";
 
 /**
- * An in-memory ApiClient plus a matching EventSource for running the board
+ * An in-memory ApiClient plus a matching EventSource for running the web app
  * before the backend exists (issue #1: "Kanban with fake Events first").
  * Selected with VITE_API_MODE=fixture. Starting a Task walks it through every
  * Stage on a timer, pausing on the Planner's Question and stopping at the
- * Approval. Events are applied to the store with the same code the board uses.
+ * Approval. Events are applied to the store with the same code the board uses;
+ * each Task also keeps the runs, Artifacts, and Events the detail page reads,
+ * and a running Agent emits AGENT_OUTPUT lines on a ticker.
  */
 export interface FixtureApi {
   client: ApiClient;
@@ -30,9 +39,11 @@ export interface FixtureApi {
 }
 
 const STEP_MS = 1600;
+const OUTPUT_MS = 500;
 const CONNECTING = 0;
 const OPEN = 1;
 const CLOSED = 2;
+const EVENTS_URL = "fixture://events";
 
 declare global {
   interface Window {
@@ -41,16 +52,72 @@ declare global {
   }
 }
 
+interface DetailState {
+  agentRuns: AgentRun[];
+  testRuns: TestRun[];
+  questions: Question[];
+  deployments: Deployment[];
+  artifacts: Artifact[];
+  events: Event[];
+  /** Output lines per run id, flushed into a LOG Artifact when the run finishes. */
+  output: Map<string, string[]>;
+  logs: Map<string, string>;
+}
+
+const emptyDetail = (): DetailState => ({
+  agentRuns: [],
+  testRuns: [],
+  questions: [],
+  deployments: [],
+  artifacts: [],
+  events: [],
+  output: new Map(),
+  logs: new Map(),
+});
+
+const AGENT_SCRIPT: Record<Agent, string[]> = {
+  PLANNER: ["Cloning at main", "$ npm ci", "[tool] read fe/src/App.tsx", "[tool] read fe/src/components/GalleryHeader.tsx", "Drafting the Plan", "Plan stored"],
+  DEVELOPER: [
+    "Cloning at main",
+    "[tool] read fe/src/components/GalleryHeader.tsx",
+    "[tool] edit fe/src/components/GalleryHeader.tsx",
+    "[tool] edit fe/e2e/gallery.spec.ts",
+    "$ npm run build --prefix fe",
+    "Build passed in 14.2s",
+    "Committing and pushing as sdlc-ai[bot]",
+    "Opened PR",
+  ],
+  REVIEWER_SECURITY: ["Cloning at task branch", "[tool] read fe/src/components/GalleryHeader.tsx", "Checking for unsanitised rendering", "Verdict: PASS"],
+  REVIEWER_ARCHITECTURE: ["Cloning at task branch", "[tool] read fe/src/components/GalleryHeader.tsx", "Verdict: PASS"],
+  REVIEWER_QUALITY: ["Cloning at task branch", "[tool] read fe/e2e/gallery.spec.ts", "Verdict: PASS"],
+  REVIEWER_PERFORMANCE: ["Cloning at task branch", "Measuring gallery render", "Verdict: PASS"],
+};
+
 export function createFixtureApi(): FixtureApi {
-  let tasks: BoardTask[] = seedTasks();
+  let tasks: BoardTask[] = [];
+  const details = new Map<string, DetailState>();
   const sources = new Set<FixtureEventSource>();
   const timers = new Set<ReturnType<typeof setTimeout>>();
+  const tickers = new Map<string, ReturnType<typeof setInterval>>();
+
+  const detailOf = (taskId: string): DetailState => {
+    let state = details.get(taskId);
+    if (!state) {
+      state = emptyDetail();
+      details.set(taskId, state);
+    }
+    return state;
+  };
+
+  const broadcast = (message: SseMessage) => {
+    for (const source of sources) source.deliver(message);
+  };
 
   const emit = (taskId: string, type: EventType, payload: Record<string, unknown>) => {
     const event: Event = { id: crypto.randomUUID(), taskId, type, payload, createdAt: now() };
     tasks = applyEventToTasks(tasks, event).tasks;
-    const message: SseMessage = { kind: "event", event };
-    for (const source of sources) source.deliver(message);
+    detailOf(taskId).events.push(event);
+    broadcast({ kind: "event", event });
   };
 
   const after = (ms: number, fn: () => void) => {
@@ -67,10 +134,129 @@ export function createFixtureApi(): FixtureApi {
     return task;
   };
 
-  const moveTo = (taskId: string, to: Stage, status: TaskStatus) =>
+  const patchTask = (taskId: string, patch: Partial<BoardTask>) => {
+    tasks = tasks.map((t) => (t.id === taskId ? { ...t, ...patch, updatedAt: now() } : t));
+  };
+
+  const output = (taskId: string, ref: { agentRunId?: string; testRunId?: string }, line: string) => {
+    const at = now();
+    const state = detailOf(taskId);
+    const id = ref.agentRunId ?? ref.testRunId ?? "task";
+    state.output.set(id, [...(state.output.get(id) ?? []), `${at} ${line}`]);
+    broadcast({ kind: "agent_output", taskId, agentRunId: ref.agentRunId ?? null, testRunId: ref.testRunId ?? null, line, at });
+  };
+
+  const saveLog = (taskId: string, ref: { agentRunId?: string; testRunId?: string }, name: string) => {
+    const state = detailOf(taskId);
+    const id = ref.agentRunId ?? ref.testRunId ?? "task";
+    const content = (state.output.get(id) ?? []).join("\n");
+    const artifact: Artifact = {
+      id: crypto.randomUUID(),
+      taskId,
+      agentRunId: ref.agentRunId ?? null,
+      testRunId: ref.testRunId ?? null,
+      type: "LOG",
+      name,
+      sizeBytes: content.length,
+      createdAt: now(),
+    };
+    state.artifacts.push(artifact);
+    state.logs.set(artifact.id, content);
+  };
+
+  const finishAgentRun = (taskId: string, runId: string, status: AgentRun["status"] = "COMPLETED") => {
+    const state = detailOf(taskId);
+    const run = state.agentRuns.find((r) => r.id === runId);
+    if (!run || run.status !== "RUNNING") return;
+    const ticker = tickers.get(runId);
+    if (ticker) clearInterval(ticker);
+    tickers.delete(runId);
+    Object.assign(run, { status, completedAt: now(), exitCode: status === "COMPLETED" ? 0 : 1 });
+    saveLog(taskId, { agentRunId: runId }, `${run.agent.toLowerCase()}-attempt-${run.attempt}.log`);
+    emit(taskId, status === "COMPLETED" ? "AGENT_RUN_COMPLETED" : "AGENT_RUN_FAILED", { agentRunId: runId, agent: run.agent, attempt: run.attempt, status });
+  };
+
+  const finishRunning = (taskId: string) => {
+    for (const run of detailOf(taskId).agentRuns) if (run.status === "RUNNING") finishAgentRun(taskId, run.id);
+  };
+
+  const moveTo = (taskId: string, to: Stage, status: TaskStatus) => {
+    finishRunning(taskId);
     emit(taskId, "TASK_STAGE_CHANGED", { from: find(taskId).stage, to, status });
-  const runAgent = (taskId: string, agent: Agent) =>
-    emit(taskId, "AGENT_RUN_STARTED", { agentRunId: crypto.randomUUID(), agent });
+  };
+
+  const runAgent = (taskId: string, agent: Agent) => {
+    const state = detailOf(taskId);
+    const attempt = state.agentRuns.filter((r) => r.agent === agent).length + 1;
+    const run: AgentRun = {
+      id: crypto.randomUUID(),
+      taskId,
+      agent,
+      status: "RUNNING",
+      attempt,
+      opencodeSessionId: `ses_fixture_${agent.toLowerCase()}`,
+      model: agent === "DEVELOPER" ? "claude-sonnet-5" : "claude-haiku-4-5-20251001",
+      startedAt: now(),
+      completedAt: null,
+      exitCode: null,
+      error: null,
+      createdAt: now(),
+    };
+    state.agentRuns.push(run);
+    emit(taskId, "AGENT_RUN_STARTED", { agentRunId: run.id, agent, attempt, model: run.model });
+    output(taskId, { agentRunId: run.id }, `Starting ${agent} (attempt ${attempt}, model ${run.model})`);
+    const script = AGENT_SCRIPT[agent];
+    let index = 0;
+    const ticker = setInterval(() => {
+      const line = script[index++];
+      if (line === undefined) {
+        clearInterval(ticker);
+        tickers.delete(run.id);
+        return;
+      }
+      output(taskId, { agentRunId: run.id }, line);
+    }, OUTPUT_MS);
+    tickers.set(run.id, ticker);
+    return run;
+  };
+
+  const runTests = (taskId: string, pass = true) => {
+    const state = detailOf(taskId);
+    const run: TestRun = {
+      id: crypto.randomUUID(),
+      taskId,
+      command: "npm run test:e2e",
+      status: "RUNNING",
+      attempt: state.testRuns.length + 1,
+      exitCode: null,
+      passed: null,
+      failed: null,
+      skipped: null,
+      durationMs: null,
+      error: null,
+      startedAt: now(),
+      completedAt: null,
+      createdAt: now(),
+    };
+    state.testRuns.push(run);
+    emit(taskId, "TEST_RUN_STARTED", { testRunId: run.id, attempt: run.attempt });
+    output(taskId, { testRunId: run.id }, "$ npm run test:e2e");
+    output(taskId, { testRunId: run.id }, "Running 12 tests using 2 workers");
+    after(STEP_MS - 200, () => {
+      output(taskId, { testRunId: run.id }, pass ? "  12 passed (48.2s)" : "  2 failed\n  10 passed (51.0s)");
+      Object.assign(run, {
+        status: "COMPLETED",
+        exitCode: pass ? 0 : 1,
+        passed: pass ? 12 : 10,
+        failed: pass ? 0 : 2,
+        skipped: 0,
+        durationMs: pass ? 48_200 : 51_000,
+        completedAt: now(),
+      });
+      saveLog(taskId, { testRunId: run.id }, `e2e-attempt-${run.attempt}.log`);
+      emit(taskId, "TEST_RUN_COMPLETED", { testRunId: run.id, attempt: run.attempt, status: "COMPLETED", exitCode: run.exitCode, passed: run.passed, failed: run.failed, durationMs: run.durationMs });
+    });
+  };
 
   /** Steps run STEP_MS apart; a step returning false stops the sequence. */
   const sequence = (steps: Array<() => boolean | void>) => {
@@ -84,10 +270,11 @@ export function createFixtureApi(): FixtureApi {
   };
 
   const askQuestion = (taskId: string) => {
+    const planner = [...detailOf(taskId).agentRuns].reverse().find((r) => r.agent === "PLANNER");
     const question: Question = {
       id: crypto.randomUUID(),
       taskId,
-      agentRunId: crypto.randomUUID(),
+      agentRunId: planner?.id ?? crypto.randomUUID(),
       text: "Should the count include archived templates?",
       options: ["Only active templates", "Active and archived", "Show both counts"],
       status: "PENDING",
@@ -95,16 +282,38 @@ export function createFixtureApi(): FixtureApi {
       createdAt: now(),
       answeredAt: null,
     };
+    detailOf(taskId).questions.push(question);
+    output(taskId, { agentRunId: question.agentRunId }, `Question for operator: ${question.text}`);
+    finishRunning(taskId);
     emit(taskId, "QUESTION_CREATED", { question });
+  };
+
+  const openPr = (taskId: string) => {
+    const task = find(taskId);
+    const number = 120 + tasks.indexOf(task) + 1;
+    const patch = {
+      branchName: `sdlc/${taskId.slice(0, 8)}-${slugify(task.title)}`,
+      pullRequestNumber: number,
+      pullRequestUrl: `https://github.com/sumrender/meme/pull/${number}`,
+    };
+    patchTask(taskId, patch);
+    emit(taskId, "PR_CREATED", { number, url: patch.pullRequestUrl, branch: patch.branchName });
   };
 
   const developAndReview = (taskId: string) =>
     sequence([
       () => {
+        patchTask(taskId, { plan: PLAN });
         moveTo(taskId, "DEVELOPMENT", "RUNNING");
         runAgent(taskId, "DEVELOPER");
       },
-      () => moveTo(taskId, "E2E", "RUNNING"),
+      () => undefined,
+      () => undefined,
+      () => {
+        openPr(taskId);
+        moveTo(taskId, "E2E", "RUNNING");
+        runTests(taskId);
+      },
       () => {
         moveTo(taskId, "AGENT_REVIEW", "RUNNING");
         runAgent(taskId, "REVIEWER_SECURITY");
@@ -112,11 +321,29 @@ export function createFixtureApi(): FixtureApi {
       () => runAgent(taskId, "REVIEWER_ARCHITECTURE"),
       () => runAgent(taskId, "REVIEWER_QUALITY"),
       () => runAgent(taskId, "REVIEWER_PERFORMANCE"),
+      () => undefined,
       () => {
         moveTo(taskId, "HUMAN_REVIEW", "READY");
         emit(taskId, "APPROVAL_REQUESTED", { approvalId: crypto.randomUUID() });
       },
     ]);
+
+  const toDetail = (taskId: string): TaskDetail => {
+    const task = find(taskId);
+    const { activeAgent: _a, pendingQuestion: _q, pendingApprovalId: _p, ...plain } = task;
+    const state = detailOf(taskId);
+    return {
+      ...plain,
+      agentRuns: [...state.agentRuns],
+      testRuns: [...state.testRuns],
+      questions: [...state.questions],
+      reviews: [],
+      approvals: [],
+      deployments: [...state.deployments],
+      artifacts: [...state.artifacts],
+      events: [...state.events],
+    };
+  };
 
   const client: ApiClient = {
     listTasks: async () => tasks,
@@ -135,6 +362,7 @@ export function createFixtureApi(): FixtureApi {
           moveTo(taskId, "PLANNING", "RUNNING");
           runAgent(taskId, "PLANNER");
         },
+        () => undefined,
         () => askQuestion(taskId),
       ]);
       return find(taskId);
@@ -144,9 +372,11 @@ export function createFixtureApi(): FixtureApi {
       if (task.pendingQuestion?.id !== questionId) {
         throw new ApiRequestError(409, "That Question is no longer pending", "QUESTION_NOT_PENDING");
       }
+      const question = detailOf(taskId).questions.find((q) => q.id === questionId);
+      if (question) Object.assign(question, { status: "ANSWERED", answer: input.answer, answeredAt: now() });
       emit(taskId, "QUESTION_ANSWERED", { questionId, answer: input.answer });
       runAgent(taskId, "PLANNER");
-      after(STEP_MS, () => developAndReview(taskId));
+      after(STEP_MS * 2, () => developAndReview(taskId));
       return find(taskId);
     },
     runDemo: async () => {
@@ -155,16 +385,46 @@ export function createFixtureApi(): FixtureApi {
     },
     resetDemo: async (): Promise<ResetDemoResult> => {
       for (const timer of timers) clearTimeout(timer);
+      for (const ticker of tickers.values()) clearInterval(ticker);
       timers.clear();
+      tickers.clear();
       const tasksDeleted = tasks.length;
       tasks = [];
+      details.clear();
       return { tasksDeleted, issuesClosed: tasksDeleted, pullRequestsClosed: 0, branchesDeleted: 0 };
     },
-    eventsUrl: () => "fixture://events",
+    getTask: async (taskId) => toDetail(taskId),
+    retryTask: async (taskId) => {
+      const task = find(taskId);
+      const availability = retryAvailability(task);
+      if (!availability.allowed) throw new ApiRequestError(409, availability.reason, "NOT_RETRYABLE");
+      emit(taskId, "TASK_RETRIED", { stage: task.stage, previousError: task.error });
+      patchTask(taskId, { error: null });
+      emit(taskId, "TASK_STATUS_CHANGED", { status: "RUNNING", from: "FAILED", to: "RUNNING", stage: task.stage });
+      if (task.stage === "E2E") after(STEP_MS, () => runTests(taskId));
+      return toDetail(taskId);
+    },
+    sendBackTask: async (taskId) => {
+      const task = find(taskId);
+      const availability = sendBackAvailability(task);
+      if (!availability.allowed) throw new ApiRequestError(409, availability.reason, "NOT_SENDABLE");
+      patchTask(taskId, { error: null, pendingFeedback: "E2E failed; see the Test Run logs." });
+      moveTo(taskId, "DEVELOPMENT", "RUNNING");
+      runAgent(taskId, "DEVELOPER");
+      return toDetail(taskId);
+    },
+    fetchArtifactText: async (taskId, artifactId) => {
+      const content = detailOf(taskId).logs.get(artifactId);
+      if (content === undefined) throw new ApiRequestError(404, "Artifact not found", "NOT_FOUND");
+      return content;
+    },
+    artifactContentUrl: (taskId, artifactId) => `fixture://artifacts/${taskId}/${artifactId}`,
+    eventsUrl: (taskId) => (taskId ? `${EVENTS_URL}?taskId=${taskId}` : EVENTS_URL),
   };
 
-  const createEventSource = () => {
-    const source = new FixtureEventSource(() => sources.delete(source));
+  const createEventSource = (url: string) => {
+    const taskId = new URL(url).searchParams.get("taskId");
+    const source = new FixtureEventSource(taskId, () => sources.delete(source));
     sources.add(source);
     return source;
   };
@@ -173,16 +433,22 @@ export function createFixtureApi(): FixtureApi {
     window.sdlcFixture = { dropConnection: () => sources.forEach((s) => s.drop()) };
   }
 
+  tasks = seedTasks();
+  for (const task of tasks) seedDetail(task, detailOf(task.id));
+
   return { client, createEventSource };
 }
 
 class FixtureEventSource implements EventSourceLike {
   readyState: number = CONNECTING;
   onopen: EventSource["onopen"] = null;
-  onmessage: EventSource["onmessage"] = null;
   onerror: EventSource["onerror"] = null;
+  private readonly listeners = new Map<string, Set<(event: MessageEvent) => void>>();
 
-  constructor(private readonly onClose: () => void) {
+  constructor(
+    private readonly taskId: string | null,
+    private readonly onClose: () => void,
+  ) {
     queueMicrotask(() => {
       if (this.readyState !== CONNECTING) return;
       this.readyState = OPEN;
@@ -190,9 +456,21 @@ class FixtureEventSource implements EventSourceLike {
     });
   }
 
+  addEventListener(type: string, listener: (event: MessageEvent) => void) {
+    let set = this.listeners.get(type);
+    if (!set) {
+      set = new Set();
+      this.listeners.set(type, set);
+    }
+    set.add(listener);
+  }
+
   deliver(message: SseMessage) {
     if (this.readyState !== OPEN) return;
-    this.onmessage?.call(this.asEventSource(), new MessageEvent("message", { data: JSON.stringify(message) }));
+    const messageTaskId = message.kind === "event" ? message.event.taskId : message.taskId;
+    if (this.taskId && messageTaskId !== this.taskId) return;
+    const event = new MessageEvent(message.kind, { data: JSON.stringify(message) });
+    for (const listener of this.listeners.get(message.kind) ?? []) listener(event);
   }
 
   /** Simulates the server dropping the connection for good; the client opens a new source. */
@@ -213,20 +491,33 @@ class FixtureEventSource implements EventSourceLike {
 }
 
 const now = () => new Date().toISOString();
+const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+const slugify = (s: string) =>
+  s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+
+const PLAN = `1. In fe/src/components/GalleryHeader.tsx render "{templates.length} templates" next to the title.
+2. Guard against templates being undefined while the gallery query is loading.
+3. Add an E2E assertion in fe/e2e/gallery.spec.ts for data-testid="template-count".
+4. Run npm run build --prefix fe and npm run test:e2e.`;
 
 function makeTask(input: CreateTaskInput, overrides: Partial<BoardTask> = {}): BoardTask {
   const at = now();
+  const id = crypto.randomUUID();
   return {
-    id: crypto.randomUUID(),
+    id,
     projectId: "fixture-project",
     title: input.title,
     description: input.description,
     stage: "TODO",
     status: "READY",
     plan: null,
-    issueNumber: null,
-    issueUrl: null,
-    branchName: null,
+    issueNumber: 41,
+    issueUrl: "https://github.com/sumrender/meme/issues/41",
+    branchName: `sdlc/${id.slice(0, 8)}-${slugify(input.title)}`,
     pullRequestNumber: null,
     pullRequestUrl: null,
     mergedCommitSha: null,
@@ -246,10 +537,162 @@ function makeTask(input: CreateTaskInput, overrides: Partial<BoardTask> = {}): B
 function seedTasks(): BoardTask[] {
   return [
     makeTask(
-      { title: "Add dark mode toggle to the settings page", description: "" },
-      { stage: "STAGING", status: "COMPLETED", createdAt: "2026-09-18T09:00:00.000Z" },
+      { title: "Add dark mode toggle to the settings page", description: "Persist the choice and respect prefers-color-scheme." },
+      {
+        stage: "STAGING",
+        status: "COMPLETED",
+        plan: PLAN,
+        pullRequestNumber: 118,
+        pullRequestUrl: "https://github.com/sumrender/meme/pull/118",
+        mergedCommitSha: "9f31c8a2d4e5b6c7a8f9e0d1c2b3a4f5e6d7c8b9",
+        createdAt: minutesAgo(180),
+        stageEnteredAt: minutesAgo(120),
+      },
     ),
-    makeTask({ title: "Fix flaky template search on empty query", description: "" }, { createdAt: "2026-09-18T10:00:00.000Z" }),
-    makeTask({ title: "Paginate the template gallery", description: "" }, { createdAt: "2026-09-18T11:00:00.000Z" }),
+    makeTask(
+      { title: "Sort templates by most recently used", description: "Order the gallery by lastUsedAt descending." },
+      {
+        stage: "E2E",
+        status: "FAILED",
+        plan: PLAN,
+        pullRequestNumber: 119,
+        pullRequestUrl: "https://github.com/sumrender/meme/pull/119",
+        e2eRejectLoopUsed: true,
+        error: "E2E failed again after the automatic Reject loop (2 failed)",
+        createdAt: minutesAgo(80),
+        stageEnteredAt: minutesAgo(46),
+      },
+    ),
+    makeTask({ title: "Fix flaky template search on empty query", description: "" }, { createdAt: minutesAgo(60) }),
+    makeTask({ title: "Paginate the template gallery", description: "" }, { createdAt: minutesAgo(30) }),
   ];
+}
+
+/** Gives the seeded non-TODO Tasks a plausible history so the detail page has something to show. */
+function seedDetail(task: BoardTask, state: DetailState) {
+  if (task.stage === "TODO") return;
+  const age = (Date.now() - Date.parse(task.createdAt)) / 60_000;
+  const event = (type: EventType, payload: Record<string, unknown>, agoMinutes: number) =>
+    state.events.push({ id: crypto.randomUUID(), taskId: task.id, type, payload, createdAt: minutesAgo(agoMinutes) });
+  const run = (agent: Agent, agoMinutes: number, durationMinutes: number, lines: string[], status: AgentRun["status"] = "COMPLETED") => {
+    const row: AgentRun = {
+      id: crypto.randomUUID(),
+      taskId: task.id,
+      agent,
+      status,
+      attempt: state.agentRuns.filter((r) => r.agent === agent).length + 1,
+      opencodeSessionId: `ses_fixture_${agent.toLowerCase()}`,
+      model: agent === "DEVELOPER" ? "claude-sonnet-5" : "claude-haiku-4-5-20251001",
+      startedAt: minutesAgo(agoMinutes),
+      completedAt: minutesAgo(agoMinutes - durationMinutes),
+      exitCode: status === "COMPLETED" ? 0 : 1,
+      error: null,
+      createdAt: minutesAgo(agoMinutes),
+    };
+    state.agentRuns.push(row);
+    event("AGENT_RUN_STARTED", { agentRunId: row.id, agent, attempt: row.attempt, model: row.model }, agoMinutes);
+    event("AGENT_RUN_COMPLETED", { agentRunId: row.id, agent, attempt: row.attempt, status }, agoMinutes - durationMinutes);
+    const artifact: Artifact = {
+      id: crypto.randomUUID(),
+      taskId: task.id,
+      agentRunId: row.id,
+      testRunId: null,
+      type: "LOG",
+      name: `${agent.toLowerCase()}-attempt-${row.attempt}.log`,
+      sizeBytes: 0,
+      createdAt: row.completedAt ?? row.createdAt,
+    };
+    const content = [`Starting ${agent} (attempt ${row.attempt}, model ${row.model})`, ...lines]
+      .map((l, i) => `${new Date(Date.parse(row.startedAt!) + i * 4000).toISOString()} ${l}`)
+      .join("\n");
+    artifact.sizeBytes = content.length;
+    state.artifacts.push(artifact);
+    state.logs.set(artifact.id, content);
+  };
+  const tests = (pass: boolean, agoMinutes: number) => {
+    const output = pass
+      ? "Running 12 tests using 2 workers\n\n  12 passed (48.2s)"
+      : 'Running 12 tests using 2 workers\n\n  1) gallery.spec.ts:14 › shows template count\n     Expected: "12 templates" Received: "undefined templates"\n\n  2 failed\n  10 passed (51.0s)';
+    const row: TestRun = {
+      id: crypto.randomUUID(),
+      taskId: task.id,
+      command: "npm run test:e2e",
+      status: "COMPLETED",
+      attempt: state.testRuns.length + 1,
+      exitCode: pass ? 0 : 1,
+      passed: pass ? 12 : 10,
+      failed: pass ? 0 : 2,
+      skipped: 0,
+      durationMs: pass ? 48_200 : 51_000,
+      error: null,
+      startedAt: minutesAgo(agoMinutes),
+      completedAt: minutesAgo(agoMinutes - 1),
+      createdAt: minutesAgo(agoMinutes),
+    };
+    state.testRuns.push(row);
+    event("TEST_RUN_STARTED", { testRunId: row.id, attempt: row.attempt }, agoMinutes);
+    event("TEST_RUN_COMPLETED", { testRunId: row.id, attempt: row.attempt, status: "COMPLETED", exitCode: row.exitCode, passed: row.passed, failed: row.failed, durationMs: row.durationMs }, agoMinutes - 1);
+    const artifact: Artifact = {
+      id: crypto.randomUUID(),
+      taskId: task.id,
+      agentRunId: null,
+      testRunId: row.id,
+      type: "LOG",
+      name: `e2e-attempt-${row.attempt}.log`,
+      sizeBytes: output.length,
+      createdAt: row.completedAt ?? row.createdAt,
+    };
+    state.artifacts.push(artifact);
+    state.logs.set(artifact.id, `$ npm run test:e2e\n${output}`);
+  };
+  const stage = (from: Stage, to: Stage, agoMinutes: number) => event("TASK_STAGE_CHANGED", { from, to, status: "RUNNING" }, agoMinutes);
+  const planner = ["Cloning at main", "$ npm ci", "[tool] read fe/src/components/GalleryHeader.tsx", "Plan stored"];
+  const developer = ["Cloning at main", "[tool] edit fe/src/components/GalleryHeader.tsx", "$ npm run build --prefix fe", "Opened PR"];
+
+  event("TASK_CREATED", { task }, age);
+  stage("TODO", "PLANNING", age - 1);
+  run("PLANNER", age - 2, 3, planner);
+  stage("PLANNING", "DEVELOPMENT", age - 5);
+  run("DEVELOPER", age - 6, 12, developer);
+  event("PR_CREATED", { number: task.pullRequestNumber, url: task.pullRequestUrl, branch: task.branchName }, age - 18);
+  stage("DEVELOPMENT", "E2E", age - 19);
+
+  if (task.stage === "E2E") {
+    tests(false, age - 20);
+    stage("E2E", "DEVELOPMENT", age - 22);
+    run("DEVELOPER", age - 23, 10, developer);
+    stage("DEVELOPMENT", "E2E", age - 34);
+    tests(false, age - 35);
+    event("TASK_STATUS_CHANGED", { status: "FAILED", from: "RUNNING", to: "FAILED", stage: "E2E" }, age - 36);
+    event("TASK_FAILED", { stage: "E2E", error: task.error }, age - 36);
+    return;
+  }
+
+  tests(true, age - 20);
+  stage("E2E", "AGENT_REVIEW", age - 22);
+  for (const reviewer of ["REVIEWER_SECURITY", "REVIEWER_ARCHITECTURE", "REVIEWER_QUALITY", "REVIEWER_PERFORMANCE"] as const) {
+    run(reviewer, age - 23, 2, ["Cloning at task branch", "Verdict: PASS"]);
+  }
+  stage("AGENT_REVIEW", "HUMAN_REVIEW", age - 26);
+  const approvalId = crypto.randomUUID();
+  event("APPROVAL_REQUESTED", { approvalId }, age - 26);
+  event("APPROVAL_DECIDED", { approvalId, decision: "APPROVED", feedback: null }, age - 40);
+  event("MERGED", { sha: task.mergedCommitSha, pullRequestNumber: task.pullRequestNumber, changedFiles: ["fe/src/components/SettingsDrawer.tsx"] }, age - 41);
+  stage("HUMAN_REVIEW", "STAGING", age - 41);
+  const deployment: Deployment = {
+    id: crypto.randomUUID(),
+    taskId: task.id,
+    target: "FE",
+    provider: "CLOUDFLARE",
+    commitSha: task.mergedCommitSha ?? "",
+    providerRef: "cf-build-8e02",
+    status: "LIVE",
+    url: "https://meme-fe.stage.example",
+    error: null,
+    lastPolledAt: minutesAgo(age - 45),
+    createdAt: minutesAgo(age - 41),
+  };
+  state.deployments.push(deployment);
+  event("DEPLOYMENT_UPDATED", { deploymentId: deployment.id, target: "FE", provider: "CLOUDFLARE", from: "BUILDING", to: "LIVE", url: deployment.url }, age - 45);
+  event("TASK_STATUS_CHANGED", { status: "COMPLETED", from: "RUNNING", to: "COMPLETED", stage: "STAGING" }, age - 45);
 }

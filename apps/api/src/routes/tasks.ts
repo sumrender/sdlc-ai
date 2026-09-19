@@ -17,25 +17,38 @@ export function taskRoutes(workflow: WorkflowService, store: ArtifactStore) {
 
   r.get("/", async (c) => c.json(await workflow.listTasks()));
 
+  // Board actions answer with a BoardTask; detail actions answer with the TaskDetail. Both match the shared schemas the web app parses.
   r.post("/", async (c) => {
     const input = await parseBody(c.req.raw, CreateTaskInputSchema);
-    return c.json(await workflow.createTask(input), 201);
+    const task = await workflow.createTask(input);
+    return c.json(await workflow.boardTask(task.id), 201);
   });
 
   r.get("/:id", async (c) => c.json(await workflow.taskDetail(c.req.param("id"))));
 
-  r.post("/:id/start", async (c) => c.json(await workflow.start(c.req.param("id"))));
-  r.post("/:id/retry", async (c) => c.json(await workflow.retry(c.req.param("id"))));
-  r.post("/:id/send-back", async (c) => c.json(await workflow.sendBackToDevelopment(c.req.param("id"))));
+  r.post("/:id/start", async (c) => {
+    await workflow.start(c.req.param("id"));
+    return c.json(await workflow.boardTask(c.req.param("id")));
+  });
+  r.post("/:id/retry", async (c) => {
+    await workflow.retry(c.req.param("id"));
+    return c.json(await workflow.taskDetail(c.req.param("id")));
+  });
+  r.post("/:id/send-back", async (c) => {
+    await workflow.sendBackToDevelopment(c.req.param("id"));
+    return c.json(await workflow.taskDetail(c.req.param("id")));
+  });
 
   r.post("/:id/questions/:questionId/answer", async (c) => {
     const input = await parseBody(c.req.raw, AnswerQuestionInputSchema);
-    return c.json(await workflow.answerQuestion(c.req.param("id"), c.req.param("questionId"), input.answer));
+    await workflow.answerQuestion(c.req.param("id"), c.req.param("questionId"), input.answer);
+    return c.json(await workflow.boardTask(c.req.param("id")));
   });
 
   r.post("/:id/approvals/:approvalId/decide", async (c) => {
     const input = await parseBody(c.req.raw, DecideApprovalInputSchema);
-    return c.json(await workflow.decideApproval(c.req.param("id"), c.req.param("approvalId"), input));
+    await workflow.decideApproval(c.req.param("id"), c.req.param("approvalId"), input);
+    return c.json(await workflow.taskDetail(c.req.param("id")));
   });
 
   r.get("/:id/artifacts", async (c) => {

@@ -1,6 +1,9 @@
 // Fills the database with one Project and Tasks in every Stage and Status so the web app
 // can be built against realistic data. Wipes existing Tasks and Artifacts first.
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
+import zlib from "node:zlib";
 import { eq } from "drizzle-orm";
 import { REVIEWERS, type Agent, type EventType, type Finding, type RunStatus, type Stage, type TaskStatus, type Verdict } from "@sdlc-ai/shared";
 import { ArtifactStore } from "./artifacts/store.js";
@@ -144,7 +147,21 @@ async function main() {
     await event(task, "TEST_RUN_STARTED", { testRunId: row!.id, attempt: 1 }, agoMinutes);
     await event(task, "TEST_RUN_COMPLETED", { testRunId: row!.id, status: "COMPLETED", exitCode: row!.exitCode, passed: row!.passed, failed: row!.failed }, agoMinutes - 1);
     await store.saveLog({ taskId: task.id, testRunId: row!.id, name: "e2e-attempt-1.log", content: `$ npm run test:e2e\n${output}` });
+    await playwrightArtifacts(task.id, row!.id, pass);
     return row!;
+  };
+
+  // What a Test Run copies out of the Sandbox: the Playwright HTML report and a screenshot per test.
+  const playwrightArtifacts = async (taskId: string, testRunId: string, pass: boolean) => {
+    const dest = await store.testRunDir(taskId, testRunId);
+    const report = path.join(dest, "playwright-report");
+    await fs.mkdir(report, { recursive: true });
+    await fs.writeFile(path.join(report, "index.html"), playwrightReportHtml(pass), "utf8");
+    await store.importDir({ taskId, testRunId, dir: report, prefix: "fe/playwright-report" });
+    const results = path.join(dest, "test-results", "gallery-shows-template-count");
+    await fs.mkdir(results, { recursive: true });
+    await fs.writeFile(path.join(results, pass ? "gallery-header.png" : "gallery-header-failed.png"), fakeScreenshotPng(pass));
+    await store.importDir({ taskId, testRunId, dir: path.join(dest, "test-results"), prefix: "fe/test-results" });
   };
 
   const review = async (task: TaskRow, reviewer: (typeof REVIEWERS)[number], agoMinutes: number) => {
@@ -287,6 +304,70 @@ async function main() {
 
   const count = await db.select({ id: tasks.id }).from(tasks);
   console.log(`[seed] ${count.length} tasks seeded for ${env.GITHUB_OWNER}/${env.GITHUB_REPO}; artifacts under ${store.root}`);
+}
+
+function playwrightReportHtml(pass: boolean): string {
+  const rows = [
+    ["gallery.spec.ts", "shows template count", pass ? "passed" : "failed", "4.1s"],
+    ["gallery.spec.ts", "opens a template", "passed", "3.2s"],
+    ["gallery.spec.ts", "filters by tag", "passed", "2.8s"],
+    ["editor.spec.ts", "renders caption preview", "passed", "5.0s"],
+    ["editor.spec.ts", "exports a PNG", pass ? "passed" : "failed", "6.4s"],
+  ];
+  const tr = rows
+    .map(([file, name, status, ms]) => `<tr class="${status}"><td>${file}</td><td>${name}</td><td>${status}</td><td>${ms}</td></tr>`)
+    .join("");
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Playwright Test Report</title>
+<style>body{font:14px system-ui;margin:24px;color:#111}h1{font-size:18px}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ddd;padding:6px 8px;text-align:left}
+.passed td:nth-child(3){color:#15803d}.failed td:nth-child(3){color:#b91c1c;font-weight:600}.summary{margin:12px 0 20px;color:#444}</style></head>
+<body><h1>Playwright Test Report</h1><p class="summary">${pass ? "12 passed" : "10 passed, 2 failed"} · ${pass ? "48.2s" : "51.0s"} · chromium</p>
+<table><thead><tr><th>File</th><th>Test</th><th>Status</th><th>Duration</th></tr></thead><tbody>${tr}</tbody></table>
+<p class="summary">Seeded report: stands in for the real report copied out of the Sandbox.</p></body></html>`;
+}
+
+// A valid 320x200 PNG (a two-tone gradient with a status stripe) so screenshots render in the ArtifactViewer.
+function fakeScreenshotPng(pass: boolean): Buffer {
+  const width = 320;
+  const height = 200;
+  const raw = Buffer.alloc((width * 3 + 1) * height);
+  for (let y = 0; y < height; y++) {
+    raw[y * (width * 3 + 1)] = 0; // filter: none
+    for (let x = 0; x < width; x++) {
+      const i = y * (width * 3 + 1) + 1 + x * 3;
+      const stripe = y < 28;
+      raw[i] = stripe ? (pass ? 22 : 185) : 24 + Math.floor((x / width) * 40);
+      raw[i + 1] = stripe ? (pass ? 163 : 28) : 24 + Math.floor((y / height) * 40);
+      raw[i + 2] = stripe ? (pass ? 74 : 28) : 40 + Math.floor((x / width) * 60);
+    }
+  }
+  const chunk = (type: string, data: Buffer) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([len, body, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // colour type: RGB
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", zlib.deflateSync(raw)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+function crc32(buf: Buffer): number {
+  let crc = -1;
+  for (const byte of buf) {
+    crc ^= byte;
+    for (let k = 0; k < 8; k++) crc = crc & 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+  }
+  return (crc ^ -1) >>> 0;
 }
 
 async function upsertProject(): Promise<string> {

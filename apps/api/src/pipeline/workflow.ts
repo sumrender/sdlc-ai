@@ -4,6 +4,8 @@ import {
   ACTIVE_STAGES,
   DEMO_TASK,
   REVIEWERS,
+  retryAvailability,
+  sendBackAvailability,
   type CreateTaskInput,
   type DecideApprovalInput,
   type ResetDemoResult,
@@ -311,8 +313,8 @@ export class WorkflowService {
 
   async retry(taskId: string): Promise<TaskRow> {
     const task = await requireTask(taskId);
-    if (task.status !== "FAILED") throw new HttpError(409, "Only a FAILED Task can be retried");
-    if (task.stage === "TODO") throw new HttpError(409, "Nothing to retry in TODO");
+    const retryable = retryAvailability(task);
+    if (!retryable.allowed) throw new HttpError(409, retryable.reason);
 
     await bus.emit(taskId, "TASK_RETRIED", { stage: task.stage, previousError: task.error });
     if (task.stage === "STAGING") {
@@ -334,7 +336,8 @@ export class WorkflowService {
 
   async sendBackToDevelopment(taskId: string): Promise<TaskRow> {
     const task = await requireTask(taskId);
-    if (task.stage !== "E2E" || task.status !== "FAILED") throw new HttpError(409, "Send back is only available for a Task that FAILED in E2E");
+    const sendable = sendBackAvailability(task);
+    if (!sendable.allowed) throw new HttpError(409, sendable.reason);
     const run = await latestTestRun(taskId);
     await updateTask(taskId, { pendingFeedback: run ? e2eFeedback(run) : "E2E failed; see the Test Run logs.", error: null });
     await transition(task, "DEVELOPMENT", "RUNNING");
@@ -424,6 +427,12 @@ export class WorkflowService {
       pendingQuestion: pendingQuestions.find((q) => q.taskId === t.id) ?? null,
       pendingApprovalId: pendingApprovals.find((a) => a.taskId === t.id)?.id ?? null,
     }));
+  }
+
+  async boardTask(taskId: string) {
+    const task = (await this.listTasks()).find((t) => t.id === taskId);
+    if (!task) throw new HttpError(404, "Task not found");
+    return task;
   }
 
   async taskDetail(taskId: string) {

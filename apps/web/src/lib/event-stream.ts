@@ -1,7 +1,17 @@
 import { SseMessageSchema, type SseMessage } from "@sdlc-ai/shared";
 
-/** The subset of the browser EventSource the client relies on; injectable for tests. */
-export type EventSourceLike = Pick<EventSource, "readyState" | "onopen" | "onmessage" | "onerror" | "close">;
+/**
+ * The subset of the browser EventSource the client relies on; injectable for
+ * fixtures. The API names every SSE message after its kind (`event`,
+ * `agent_output`), which the browser only delivers through `addEventListener`,
+ * never through `onmessage`.
+ */
+export type EventSourceLike = Pick<EventSource, "readyState" | "onopen" | "onerror" | "close"> & {
+  addEventListener(type: string, listener: (event: MessageEvent) => void): void;
+};
+
+/** The named SSE messages the API sends that carry an `SseMessage` payload. */
+export const SSE_MESSAGE_KINDS = ["event", "agent_output"] as const satisfies readonly SseMessage["kind"][];
 
 const CLOSED = 2;
 
@@ -51,7 +61,7 @@ export function connectEventStream(
       hasOpenedBefore = true;
     };
 
-    next.onmessage = (e) => {
+    const onNamedMessage = (e: MessageEvent) => {
       const raw: unknown = e.data;
       if (typeof raw !== "string") return;
       let json: unknown;
@@ -63,6 +73,7 @@ export function connectEventStream(
       const parsed = SseMessageSchema.safeParse(json);
       if (parsed.success) handlers.onMessage(parsed.data);
     };
+    for (const kind of SSE_MESSAGE_KINDS) next.addEventListener(kind, onNamedMessage);
 
     next.onerror = () => {
       if (disposed) return;

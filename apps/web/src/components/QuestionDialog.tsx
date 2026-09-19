@@ -7,10 +7,11 @@ import { Label } from "~/components/ui/label";
 import { Textarea } from "~/components/ui/textarea";
 import { useApi } from "~/lib/api-context";
 import { upsertTask } from "~/lib/board-query";
+import { taskQueryKey } from "~/lib/task-query";
 import { cn } from "~/lib/utils";
 
 export interface QuestionDialogProps {
-  task: BoardTask;
+  task: Pick<BoardTask, "id" | "title">;
   question: Question;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -32,6 +33,7 @@ export function QuestionDialog({ task, question, open, onOpenChange }: QuestionD
     },
     onSuccess: (updated) => {
       upsertTask(queryClient, updated);
+      void queryClient.invalidateQueries({ queryKey: taskQueryKey(task.id) });
       onOpenChange(false);
     },
   });

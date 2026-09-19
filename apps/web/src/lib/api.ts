@@ -4,10 +4,12 @@ import {
   BoardTaskListSchema,
   BoardTaskSchema,
   ResetDemoResultSchema,
+  TaskDetailSchema,
   type AnswerQuestionInput,
   type BoardTask,
   type CreateTaskInput,
   type ResetDemoResult,
+  type TaskDetail,
 } from "@sdlc-ai/shared";
 import type { ZodType } from "zod";
 
@@ -29,8 +31,16 @@ export interface ApiClient {
   answerQuestion(taskId: string, questionId: string, input: AnswerQuestionInput): Promise<BoardTask>;
   runDemo(): Promise<BoardTask>;
   resetDemo(): Promise<ResetDemoResult>;
-  /** Absolute URL of the SSE endpoint. */
-  eventsUrl(): string;
+  /** The Task with every Agent Run, Test Run, Question, Review, Approval, Deployment, Artifact, and Event. */
+  getTask(taskId: string): Promise<TaskDetail>;
+  retryTask(taskId: string): Promise<TaskDetail>;
+  sendBackTask(taskId: string): Promise<TaskDetail>;
+  /** Reads a text Artifact (a LOG or DIFF) in full. */
+  fetchArtifactText(taskId: string, artifactId: string): Promise<string>;
+  /** Absolute URL that streams an Artifact's bytes; used for images, reports, and downloads. */
+  artifactContentUrl(taskId: string, artifactId: string): string;
+  /** Absolute URL of the SSE endpoint; scoped to one Task when `taskId` is given. */
+  eventsUrl(taskId?: string): string;
 }
 
 export interface ApiClientOptions {
@@ -61,8 +71,18 @@ export function createApiClient({ origin, fetch = globalThis.fetch }: ApiClientO
     startTask: (taskId) => post(API_PATHS.startTask(taskId), BoardTaskSchema),
     answerQuestion: (taskId, questionId, input) => post(API_PATHS.answerQuestion(taskId, questionId), BoardTaskSchema, input),
     runDemo: () => post(API_PATHS.runDemo, BoardTaskSchema),
-    resetDemo: () => post(API_PATHS.resetDemo, ResetDemoResultSchema),
-    eventsUrl: () => `${origin}${API_PATHS.events}`,
+    resetDemo: () => post(API_PATHS.resetDemo, ResetDemoResultSchema, { confirm: true }),
+    getTask: (taskId) => request(API_PATHS.task(taskId), TaskDetailSchema),
+    retryTask: (taskId) => post(API_PATHS.retryTask(taskId), TaskDetailSchema),
+    sendBackTask: (taskId) => post(API_PATHS.sendBackTask(taskId), TaskDetailSchema),
+    fetchArtifactText: async (taskId, artifactId) => {
+      const path = API_PATHS.artifactContent(taskId, artifactId);
+      const res = await fetch(`${origin}${path}`);
+      if (!res.ok) throw await toRequestError(res, path);
+      return res.text();
+    },
+    artifactContentUrl: (taskId, artifactId) => `${origin}${API_PATHS.artifactContent(taskId, artifactId)}`,
+    eventsUrl: (taskId) => `${origin}${API_PATHS.events}${taskId ? `?taskId=${encodeURIComponent(taskId)}` : ""}`,
   };
 }
 
