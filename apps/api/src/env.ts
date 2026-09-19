@@ -12,18 +12,22 @@ for (const candidate of [path.resolve(process.cwd(), ".env"), path.resolve(proce
   }
 }
 
-const optional = () => z.preprocess((v) => (v === "" ? undefined : v), z.string().optional());
+// .env files commonly leave keys blank; treat "" as unset so defaults apply.
+const blankToUndefined = (v: unknown) => (v === "" ? undefined : v);
+const optional = () => z.preprocess(blankToUndefined, z.string().optional());
+const withDefault = (value: string) => z.preprocess(blankToUndefined, z.string().default(value));
+const flag = () => z.preprocess((v) => v === "true" || v === "1", z.boolean());
 
 const EnvSchema = z.object({
-  PORT: z.coerce.number().int().default(4000),
+  PORT: z.preprocess(blankToUndefined, z.coerce.number().int().default(4000)),
   DATABASE_URL: z.string().min(1),
-  GITHUB_TOKEN: z.string().min(1),
-  GITHUB_OWNER: z.string().min(1),
-  GITHUB_REPO: z.string().min(1),
-  GITHUB_DEFAULT_BRANCH: z.string().default("main"),
-  ANTHROPIC_API_KEY: z.string().min(1),
-  MODEL_DEVELOPER: z.string().default("claude-sonnet-5"),
-  MODEL_FAST: z.string().default("claude-haiku-4-5-20251001"),
+  GITHUB_TOKEN: optional(),
+  GITHUB_OWNER: withDefault("sumrender"),
+  GITHUB_REPO: withDefault("meme"),
+  GITHUB_DEFAULT_BRANCH: withDefault("main"),
+  ANTHROPIC_API_KEY: optional(),
+  MODEL_DEVELOPER: withDefault("claude-sonnet-5"),
+  MODEL_FAST: withDefault("claude-haiku-4-5-20251001"),
   RENDER_API_KEY: optional(),
   RENDER_SERVICE_ID: optional(),
   CF_API_TOKEN: optional(),
@@ -31,10 +35,12 @@ const EnvSchema = z.object({
   CF_WORKER_NAME: optional(),
   FE_ORIGIN: optional(),
   BE_ORIGIN: optional(),
-  CONTROL_PLANE_URL: z.string().default("http://localhost:3000"),
-  SANDBOX_IMAGE: z.string().default("sdlc-ai-sandbox:local"),
-  DOCKER_BIN: z.string().default("docker"),
-  ARTIFACTS_DIR: z.string().default("./artifacts"),
+  CONTROL_PLANE_URL: withDefault("http://localhost:3000"),
+  SANDBOX_IMAGE: withDefault("sdlc-ai-sandbox:local"),
+  DOCKER_BIN: withDefault("docker"),
+  ARTIFACTS_DIR: withDefault("./artifacts"),
+  // Replaces Docker, GitHub and deploy providers with scripted in-memory fakes.
+  SDLC_FAKES: flag(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

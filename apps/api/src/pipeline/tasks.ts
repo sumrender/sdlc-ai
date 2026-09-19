@@ -50,7 +50,7 @@ export async function updateTask(id: string, values: Partial<typeof tasks.$infer
 export async function setStatus(task: TaskRow, status: TaskStatus, payload: Record<string, unknown> = {}): Promise<TaskRow> {
   if (task.status === status) return task;
   const row = await updateTask(task.id, { status });
-  await bus.emit(task.id, "TASK_STATUS_CHANGED", { from: task.status, to: status, stage: task.stage, ...payload });
+  await bus.emit(task.id, "TASK_STATUS_CHANGED", { status, from: task.status, to: status, stage: task.stage, ...payload });
   return row;
 }
 
@@ -64,8 +64,13 @@ export async function failTask(taskId: string, error: string): Promise<void> {
   const task = await getTask(taskId);
   if (!task || task.status === "FAILED" || task.status === "COMPLETED") return;
   await updateTask(taskId, { status: "FAILED", error });
-  await bus.emit(taskId, "TASK_STATUS_CHANGED", { from: task.status, to: "FAILED", stage: task.stage });
+  await bus.emit(taskId, "TASK_STATUS_CHANGED", { status: "FAILED", from: task.status, to: "FAILED", stage: task.stage });
   await bus.emit(taskId, "TASK_FAILED", { stage: task.stage, error });
+}
+
+export async function getAgentRun(id: string): Promise<AgentRunRow | null> {
+  const [run] = await db.select().from(agentRuns).where(eq(agentRuns.id, id)).limit(1);
+  return run ?? null;
 }
 
 export const isActiveRun = (status: RunStatus) => status === "QUEUED" || status === "RUNNING";

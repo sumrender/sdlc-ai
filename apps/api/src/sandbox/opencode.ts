@@ -1,6 +1,6 @@
 import type { Sandbox } from "../ports.js";
 import { WORKSPACE } from "./docker.js";
-import { shellQuote } from "./process.js";
+import { shellQuoteIfNeeded } from "./process.js";
 
 export interface OpenCodeOptions {
   agent: string;
@@ -22,7 +22,7 @@ export interface OpenCodeResult {
 export async function runOpenCode(sandbox: Sandbox, options: OpenCodeOptions): Promise<OpenCodeResult> {
   const args = ["opencode", "run", "--format", "json", "--agent", options.agent, "--model", `anthropic/${options.model}`, "--auto"];
   if (options.sessionId) args.push("--session", options.sessionId);
-  const command = args.map(shellQuote).join(" ");
+  const command = args.map(shellQuoteIfNeeded).join(" ");
 
   const parts = new Map<string, string>();
   let anonymous = "";
