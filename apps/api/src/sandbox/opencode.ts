@@ -20,7 +20,7 @@ export interface OpenCodeResult {
 }
 
 export async function runOpenCode(sandbox: Sandbox, options: OpenCodeOptions): Promise<OpenCodeResult> {
-  const args = ["opencode", "run", "--format", "json", "--agent", options.agent, "--model", `anthropic/${options.model}`, "--auto"];
+  const args = ["opencode", "run", "--format", "json", "--agent", options.agent, "--model", `anthropic/${options.model}`];
   if (options.sessionId) args.push("--session", options.sessionId);
   const command = args.map(shellQuoteIfNeeded).join(" ");
 

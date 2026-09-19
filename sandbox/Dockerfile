@@ -5,7 +5,13 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends git ca-certificates dotnet-sdk-8.0 \
   && rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/anomalyco/opencode:2.0.8 /usr/local/bin/opencode /usr/local/bin/opencode
+# The official OpenCode image is Alpine/musl and its binary does not run on this glibc base,
+# so install the glibc build from the GitHub release instead.
+ARG OPENCODE_VERSION=1.18.31
+RUN curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64.tar.gz" \
+  | tar -xz -C /usr/local/bin opencode \
+  && chmod +x /usr/local/bin/opencode \
+  && opencode --version
 
 RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 

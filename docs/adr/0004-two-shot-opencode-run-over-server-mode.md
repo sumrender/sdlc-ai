@@ -14,8 +14,8 @@ and leaves a hung process if the API restarts.
 ## Decision
 
 Agents are invoked as one-shot processes:
-`opencode run --format json --agent <name> --model anthropic/<id> --auto` with the prompt
-on stdin, inside a fresh Sandbox per Agent Run. Waiting on a human is a Task Status
+`opencode run --format json --agent <name> --model anthropic/<id>` with the prompt on
+stdin, inside a fresh Sandbox per Agent Run. Waiting on a human is a Task Status
 (`WAITING`), never an Agent Run state: a Planner run that asks a Question *completes*, the
 Task parks, and the answer starts a second run in a new Sandbox that passes
 `--session <id>` to resume the same OpenCode session. Session storage is a named Docker
@@ -24,9 +24,10 @@ follow-up prompt also restates the Question and answer, so it still produces a v
 the session cannot be resumed. The same pattern gives the Developer one Checks fix
 iteration and each Reviewer one re-ask.
 
-`--auto` is required because `opencode run` otherwise auto-cancels questions and
-auto-rejects permissions; read-only agents are enforced through agent-definition
-permissions, not through the runner.
+`opencode run` is non-interactive, so an agent can never prompt for permission; read-only
+agents are enforced through explicit allow/deny rules in their agent definitions, not
+through the runner. The runtime image installs the glibc release build (the official
+Alpine image's binary does not run on the Playwright base) and pins its version.
 
 ## Consequences
 

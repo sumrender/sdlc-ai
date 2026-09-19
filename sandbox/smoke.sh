@@ -9,7 +9,10 @@
 # file out.
 set -euo pipefail
 
-HERE="$(cd "$(dirname "$0")" && pwd)"
+# Git Bash on Windows rewrites arguments that look like POSIX paths (e.g. -w /workspace); disable that.
+export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
+
+HERE="$(cd "$(dirname "$0")" && (pwd -W 2>/dev/null || pwd))"
 IMAGE="${SANDBOX_IMAGE:-sdlc-ai-sandbox:local}"
 REPO="${SMOKE_REPO:-https://github.com/${GITHUB_OWNER:-sumrender}/${GITHUB_REPO:-meme}.git}"
 MODEL="${MODEL_FAST:-claude-haiku-4-5-20251001}"
@@ -40,7 +43,7 @@ if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   echo "==> trivial opencode run (model anthropic/$MODEL)"
   echo 'Reply with exactly the text SMOKE_OK and nothing else.' \
     | docker exec -i -w /workspace -e ANTHROPIC_API_KEY "$NAME" \
-        opencode run --format json --model "anthropic/$MODEL" --auto \
+        opencode run --format json --model "anthropic/$MODEL" \
     | tee /dev/stderr | grep -q 'SMOKE_OK'
 else
   echo "==> ANTHROPIC_API_KEY not set; skipping opencode run"
