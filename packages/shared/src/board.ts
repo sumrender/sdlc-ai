@@ -7,7 +7,7 @@ import {
   StageSchema,
   TaskSchema,
   TaskStatusSchema,
-} from "./domain.js";
+} from "./domain";
 
 /**
  * The shape the Kanban renders one card from. It is the Task plus the three
