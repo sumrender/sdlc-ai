@@ -14,6 +14,8 @@ export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
 
 HERE="$(cd "$(dirname "$0")" && (pwd -W 2>/dev/null || pwd))"
 IMAGE="${SANDBOX_IMAGE:-sdlc-ai-sandbox:local}"
+# Auto-pick the Dockerfile variant for the host OS; explicit DOCKERFILE wins.
+if [ -z "${DOCKERFILE:-}" ]; then DOCKERFILE="$(node "$HERE/select-dockerfile.mjs")"; fi
 REPO="${SMOKE_REPO:-https://github.com/${GITHUB_OWNER:-sumrender}/${GITHUB_REPO:-meme}.git}"
 MODEL="${MODEL_FAST:-claude-haiku-4-5-20251001}"
 NAME="sdlc-smoke-$$"
@@ -22,7 +24,7 @@ cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 echo "==> building $IMAGE"
-docker build -t "$IMAGE" "$HERE"
+docker build -f "$HERE/$DOCKERFILE" -t "$IMAGE" "$HERE"
 
 echo "==> starting sandbox $NAME"
 docker run -d --rm --name "$NAME" \

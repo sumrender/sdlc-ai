@@ -11,7 +11,7 @@
     "db:generate": "pnpm --filter @sdlc-ai/api db:generate",
     "db:migrate": "pnpm --filter @sdlc-ai/api db:migrate",
     "db:seed": "pnpm --filter @sdlc-ai/api db:seed",
-    "sandbox:build": "docker build -t sdlc-ai-sandbox:local sandbox",
+    "sandbox:build": "node sandbox/build.mjs",
     "sandbox:smoke": "bash sandbox/smoke.sh"
   },
   "devDependencies": {

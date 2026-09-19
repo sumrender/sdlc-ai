@@ -39,7 +39,7 @@ the web app.
 ## Real runs
 
 ```sh
-pnpm sandbox:build                 # build sdlc-ai-sandbox:local
+pnpm sandbox:build                 # build sdlc-ai-sandbox:local (auto-picks Dockerfile.windows on Windows)
 ANTHROPIC_API_KEY=... pnpm sandbox:smoke   # verify the image once per change
 ```
 
