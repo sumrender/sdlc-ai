@@ -1,18 +1,11 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { STAGES } from "@sdlc-ai/shared";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { KanbanBoard } from "~/components/KanbanBoard";
 
 export const Route = createFileRoute("/")({
-  component: Board,
+  component: BoardPage,
 });
 
-function Board() {
-  return (
-    <div className="grid grid-cols-7 gap-3 p-4">
-      {STAGES.map((stage) => (
-        <section key={stage} className="rounded border border-neutral-800 p-2">
-          <h2 className="text-xs font-semibold tracking-wide text-neutral-400">{stage}</h2>
-        </section>
-      ))}
-    </div>
-  );
+function BoardPage() {
+  const navigate = useNavigate();
+  return <KanbanBoard onOpenApproval={(task) => void navigate({ to: "/tasks/$id", params: { id: task.id } })} />;
 }
