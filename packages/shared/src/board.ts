@@ -30,6 +30,20 @@ export function isActiveStage(stage: Stage): boolean {
 }
 
 /**
+ * Start is refused while the number of other active Tasks reaches the
+ * configured limit. Returns the Tasks that block Start (empty when allowed).
+ * Shared so the API's refusal and the board's Start button apply the same rule.
+ */
+export function findBlockingTasks<T extends Pick<BoardTask, "id" | "stage">>(
+  tasks: readonly T[],
+  candidateId: string,
+  limit = 1,
+): T[] {
+  const active = tasks.filter((task) => task.id !== candidateId && isActiveStage(task.stage));
+  return active.length >= limit ? active : [];
+}
+
+/**
  * Start is refused while any other Task is active. Returns the Task that
  * blocks Start, or null when Start is allowed. Shared so the API's refusal
  * and the board's disabled Start button apply the same rule.
@@ -38,7 +52,7 @@ export function findBlockingTask<T extends Pick<BoardTask, "id" | "stage">>(
   tasks: readonly T[],
   candidateId: string,
 ): T | null {
-  return tasks.find((task) => task.id !== candidateId && isActiveStage(task.stage)) ?? null;
+  return findBlockingTasks(tasks, candidateId, 1)[0] ?? null;
 }
 
 // Payloads of the Events the board applies to its cache. Other Event types

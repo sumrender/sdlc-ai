@@ -15,6 +15,27 @@
       "when": 1789836548425,
       "tag": "0001_cold_pixie",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789844578866,
+      "tag": "0002_fair_scarlet_spider",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1789846976313,
+      "tag": "0003_wooden_doomsday",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1789847615502,
+      "tag": "0004_shallow_power_pack",
+      "breakpoints": true
     }
   ]
 }

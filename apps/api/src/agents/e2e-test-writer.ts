@@ -7,7 +7,7 @@ import { loadManifest } from "../integrations/manifest.js";
 import { TIMEOUTS } from "../pipeline/deps.js";
 import { tail } from "../pipeline/tasks.js";
 import { WORKSPACE } from "../sandbox/docker.js";
-import { commitAndPush, prepareWorkspace } from "../sandbox/workspace.js";
+import { commitAndPush, prepareWorkspace, prepareWorkspaceReuse } from "../sandbox/workspace.js";
 import { AGENT_DEFINITIONS } from "./definitions.js";
 import { invokeAgent, type AgentBody } from "./runner.js";
 
@@ -19,7 +19,11 @@ export const e2eTestWriterBody: AgentBody = async (ctx) => {
   if (!branch) throw new AgentOutputError("Task has no branch name");
 
   const manifest = await loadManifest(deps.github, project.defaultBranch);
-  await prepareWorkspace(sandbox, deps.github, { ref: branch, manifest, agents: ["E2E_TEST_WRITER"], log });
+  if ((project as { reuseSandbox?: boolean }).reuseSandbox) {
+    await prepareWorkspaceReuse(sandbox, deps.github, { ref: branch, manifest, agents: ["E2E_TEST_WRITER"], log });
+  } else {
+    await prepareWorkspace(sandbox, deps.github, { ref: branch, manifest, agents: ["E2E_TEST_WRITER"], log });
+  }
 
   const changedFiles = task.pullRequestNumber ? await deps.github.getChangedFiles(task.pullRequestNumber).catch(() => [] as string[]) : [];
   const result = await invokeAgent(ctx, {

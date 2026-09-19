@@ -1,5 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { KanbanBoard } from "~/components/KanbanBoard";
+import { useProjectSettings } from "~/lib/settings-query";
 
 export const Route = createFileRoute("/")({
   component: BoardPage,
@@ -7,18 +8,22 @@ export const Route = createFileRoute("/")({
 
 function BoardPage() {
   const navigate = useNavigate();
+  const settings = useProjectSettings();
   const openTask = (task: { id: string }) => void navigate({ to: "/tasks/$id", params: { id: task.id } });
+  const subtitle = settings.data
+    ? `One repo · ${settings.data.activeTaskCount} of ${settings.data.maxConcurrentTasks} task slots in use · tasks move automatically over SSE.`
+    : "One repo · tasks move automatically over SSE.";
   return (
     <div className="flex flex-col gap-3 p-4 lg:p-6">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-[13px] text-muted-foreground">
-            <span>sdlc-ai</span>
+            <span>AI powered SDLC</span>
             <span aria-hidden>/</span>
             <span className="font-medium text-foreground">Board</span>
           </nav>
           <h1 className="mt-1.5 text-xl font-semibold tracking-tight">Board</h1>
-          <p className="mt-1 text-[13px] text-muted-foreground">One repo · one active task · tasks move automatically over SSE.</p>
+          <p className="mt-1 text-[13px] text-muted-foreground">{subtitle}</p>
         </div>
       </header>
       <div className="overflow-x-auto rounded-lg border border-border bg-card">

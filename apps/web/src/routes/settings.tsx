@@ -1,12 +1,13 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { AlertTriangle, CheckCircle2, ExternalLink, RefreshCw, XCircle } from "lucide-react";
-import { MANIFEST_PATH, type ProjectSettings, type Provider } from "@sdlc-ai/shared";
+import { MANIFEST_PATH, MAX_CONCURRENT_TASKS_LIMIT, type ProjectSettings, type Provider } from "@sdlc-ai/shared";
 import { Section } from "~/components/Section";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
+import { Input } from "~/components/ui/input";
 import { formatDateTime } from "~/lib/task-detail";
-import { useProjectSettings } from "~/lib/settings-query";
+import { useProjectSettings, useUpdateMaxConcurrentTasks, useUpdateReuseSandbox } from "~/lib/settings-query";
 import { cn } from "~/lib/utils";
 
 export const Route = createFileRoute("/settings")({
@@ -23,7 +24,7 @@ function SettingsPage() {
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-[13px] text-muted-foreground">
-            <span>sdlc-ai</span>
+            <span>AI powered SDLC</span>
             <span aria-hidden>/</span>
             <span className="font-medium text-foreground">Settings</span>
           </nav>
@@ -166,6 +167,14 @@ function SettingsView({ settings }: { settings: ProjectSettings }) {
           {manifest.ok ? <ManifestView manifest={manifest.manifest} /> : <p className="text-sm text-muted-foreground">Nothing to show until the Manifest reads cleanly. See the warning above.</p>}
         </Section>
 
+        <Section title="Concurrency" aside={<span className="text-xs text-muted-foreground">Starts are blocked at the limit</span>}>
+          <ConcurrencyEditor settings={settings} />
+        </Section>
+
+        <Section title="Sandbox reuse" aside={<span className="text-xs text-muted-foreground">Faster runs, one container per task</span>}>
+          <ReuseSandboxEditor settings={settings} />
+        </Section>
+
         <Section title="Runtime" className="lg:col-span-2">
           <dl className="grid gap-y-2.5 text-sm sm:grid-cols-[10rem_minmax(0,1fr)]">
             <Row label="Developer model">
@@ -180,11 +189,20 @@ function SettingsView({ settings }: { settings: ProjectSettings }) {
             <Row label="Integrations">
               {settings.fakes ? <Badge variant="warning">Fakes (no Docker, GitHub, or deploy providers)</Badge> : <Badge variant="success">Live</Badge>}
             </Row>
-            <Row label="Active Task">
-              {settings.activeTask ? (
-                <Link to="/tasks/$id" params={{ id: settings.activeTask.id }} className="text-blue-700 hover:underline">
-                  {settings.activeTask.title} <span className="text-xs text-muted-foreground">in {settings.activeTask.stage.replace("_", " ")}</span>
-                </Link>
+            <Row label="Active Tasks">
+              {settings.activeTasks.length > 0 ? (
+                <ul className="flex flex-col gap-1">
+                  <li className="text-xs text-muted-foreground">
+                    {settings.activeTaskCount} of {settings.maxConcurrentTasks} slots used
+                  </li>
+                  {settings.activeTasks.map((t) => (
+                    <li key={t.id}>
+                      <Link to="/tasks/$id" params={{ id: t.id }} className="text-blue-700 hover:underline">
+                        {t.title} <span className="text-xs text-muted-foreground">in {t.stage.replace("_", " ")}</span>
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
               ) : (
                 <span className="text-muted-foreground">None. A new Task can be started.</span>
               )}
@@ -257,5 +275,90 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
       <dt className="text-xs text-muted-foreground">{label}</dt>
       <dd className="min-w-0 break-words">{children}</dd>
     </>
+  );
+}
+
+function ConcurrencyEditor({ settings }: { settings: ProjectSettings }) {
+  const [value, setValue] = useState(String(settings.maxConcurrentTasks));
+  const [savedValue, setSavedValue] = useState(settings.maxConcurrentTasks);
+  const mutation = useUpdateMaxConcurrentTasks();
+  const dirty = value !== String(savedValue ?? settings.maxConcurrentTasks);
+
+  const parsed = Number.parseInt(value, 10);
+  const valid = Number.isInteger(parsed) && parsed >= 1 && parsed <= MAX_CONCURRENT_TASKS_LIMIT;
+
+  return (
+    <div className="flex flex-col gap-2 text-sm">
+      <p className="text-muted-foreground">
+        {settings.activeTaskCount} of {settings.maxConcurrentTasks} task slots in use. Lowering the limit never stops running Tasks; it only
+        blocks new Starts.
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <label htmlFor="max-concurrent-tasks" className="text-xs text-muted-foreground">
+          Max concurrent tasks (1–{MAX_CONCURRENT_TASKS_LIMIT})
+        </label>
+        <Input
+          id="max-concurrent-tasks"
+          type="number"
+          min={1}
+          max={MAX_CONCURRENT_TASKS_LIMIT}
+          className="w-24"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+        />
+        <Button
+          size="sm"
+          disabled={!dirty || !valid || mutation.isPending}
+          onClick={() => {
+            if (!valid) return;
+            mutation.mutate(parsed, { onSuccess: (next) => setSavedValue(next.maxConcurrentTasks) });
+          }}
+        >
+          {mutation.isPending ? "Saving…" : "Save"}
+        </Button>
+      </div>
+      {!valid && (
+        <p role="alert" className="text-xs text-red-600">
+          Enter a whole number between 1 and {MAX_CONCURRENT_TASKS_LIMIT}.
+        </p>
+      )}
+      {mutation.isError && (
+        <p role="alert" className="text-xs text-red-600">
+          Could not save the limit: {mutation.error.message}
+        </p>
+      )}
+      {mutation.isSuccess && !dirty && <p className="text-xs text-emerald-700">Limit saved.</p>}
+    </div>
+  );
+}
+
+function ReuseSandboxEditor({ settings }: { settings: ProjectSettings }) {
+  const mutation = useUpdateReuseSandbox();
+  const checked = settings.reuseSandbox ?? true;
+
+  return (
+    <div className="flex flex-col gap-2 text-sm">
+      <p className="text-muted-foreground">
+        Reuse one container for the whole task. Setup runs once, each gate starts a fresh session and the workspace is reset to a clean
+        git state before switching.
+      </p>
+      <label htmlFor="reuse-sandbox" className="flex cursor-pointer items-center gap-2">
+        <input
+          id="reuse-sandbox"
+          type="checkbox"
+          className="h-4 w-4 accent-current"
+          checked={checked}
+          disabled={mutation.isPending}
+          onChange={(e) => mutation.mutate(e.target.checked)}
+        />
+        <span>Reuse sandbox container across gates{mutation.isPending ? " (saving…)" : ""}</span>
+      </label>
+      {mutation.isError && (
+        <p role="alert" className="text-xs text-red-600">
+          Could not save the setting: {mutation.error.message}
+        </p>
+      )}
+      {mutation.isSuccess && <p className="text-xs text-emerald-700">Setting saved.</p>}
+    </div>
   );
 }

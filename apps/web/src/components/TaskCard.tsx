@@ -18,8 +18,8 @@ export const AGENT_LABEL: Record<Agent, string> = {
 
 export interface TaskCardProps {
   task: BoardTask;
-  /** Present only for TODO cards. */
-  start?: { availability: StartAvailability; onStart: () => void; pending: boolean };
+  /** Present only for TODO cards. Blocked starts stay clickable so the board can explain the limit in an alert. */
+  start?: { availability: StartAvailability; onStart: () => void; onBlocked: (reason: string) => void; pending: boolean };
   /** Fallback when no onOpen is provided; the board always passes onOpen so every card opens its detail page. */
   onOpenPending?: () => void;
   /** Opens the Task detail page; used for every card in every stage and status. */
@@ -96,12 +96,14 @@ export function TaskCard({ task, start, onOpenPending, onOpen }: TaskCardProps) 
           <Button
             size="sm"
             className="w-full"
-            disabled={!start.availability.allowed || start.pending}
+            disabled={start.pending}
+            aria-disabled={!start.availability.allowed}
             onClick={(e) => {
               e.stopPropagation();
-              start.onStart();
+              if (start.availability.allowed) start.onStart();
+              else start.onBlocked(start.availability.reason);
             }}
-            aria-describedby={start.availability.allowed ? undefined : `task-${task.id}-start-reason`}
+            aria-describedby={!start.availability.allowed ? `task-${task.id}-start-reason` : undefined}
           >
             {start.pending ? "Starting…" : "Start"}
           </Button>

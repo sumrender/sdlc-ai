@@ -28,7 +28,7 @@ Confirmed: 7 fixed stages; task model (title, description, stage, status, branch
 
 ## Brand Commitments
 
-Name `sdlc-ai` (lowercase wordmark in header). No confirmed palette, type, logo, or voice beyond the existing neutral dark shadcn base — which this redesign replaces as anti-reference. CRITICAL: do not invent testimonials, customers, benchmarks, or pricing.
+Name `AI powered SDLC` (wordmark in header). No confirmed palette, type, logo, or voice beyond the existing neutral dark shadcn base — which this redesign replaces as anti-reference. CRITICAL: do not invent testimonials, customers, benchmarks, or pricing.
 
 ## Evidence on Hand
 

@@ -1,0 +1,1 @@
+ALTER TABLE "projects" ADD COLUMN "reuse_sandbox" boolean DEFAULT false NOT NULL;

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ProjectSchema } from "./domain";
+import { MaxConcurrentTasksSchema, ProjectSchema } from "./domain";
 import { ProjectManifestSchema } from "./manifest";
 
 export const CreateTaskInputSchema = z.object({
@@ -39,6 +39,14 @@ export const ResetDemoResultSchema = z.object({
 });
 export type ResetDemoResult = z.infer<typeof ResetDemoResultSchema>;
 
+export const UpdateProjectSettingsInputSchema = z.object({
+  maxConcurrentTasks: MaxConcurrentTasksSchema.optional(),
+  reuseSandbox: z.boolean().optional(),
+});
+export type UpdateProjectSettingsInput = z.infer<typeof UpdateProjectSettingsInputSchema>;
+
+export const MAX_CONCURRENT_TASKS_ERROR_CODE = "MAX_CONCURRENT_TASKS" as const;
+
 /** REST and SSE paths, relative to the API origin. Shared so client and server never drift. */
 export const API_PATHS = {
   health: "/health",
@@ -52,6 +60,7 @@ export const API_PATHS = {
   artifacts: (taskId: string) => `/tasks/${taskId}/artifacts`,
   artifactContent: (taskId: string, artifactId: string) => `/tasks/${taskId}/artifacts/${artifactId}/content`,
   project: "/project",
+  updateProjectSettings: "/project/settings",
   manifest: "/project/manifest",
   runDemo: "/demo/run",
   resetDemo: "/demo/reset",
@@ -84,5 +93,9 @@ export const ProjectSettingsSchema = z.object({
   sandboxImage: z.string(),
   fakes: z.boolean(),
   activeTask: z.object({ id: z.string(), title: z.string(), stage: z.string() }).nullable(),
+  activeTasks: z.array(z.object({ id: z.string(), title: z.string(), stage: z.string() })).default([]),
+  activeTaskCount: z.number().int().default(0),
+  maxConcurrentTasks: MaxConcurrentTasksSchema.default(3),
+  reuseSandbox: z.boolean().default(true),
 });
 export type ProjectSettings = z.infer<typeof ProjectSettingsSchema>;

@@ -13,6 +13,7 @@ import {
   type ProjectSettings,
   type ResetDemoResult,
   type TaskDetail,
+  type UpdateProjectSettingsInput,
 } from "@sdlc-ai/shared";
 import type { ZodType, ZodTypeDef } from "zod";
 
@@ -42,6 +43,10 @@ export interface ApiClient {
   decideApproval(taskId: string, approvalId: string, input: DecideApprovalInput): Promise<TaskDetail>;
   /** The Project, its GitHub connection, Deploy Targets, and the Manifest as read from the repository. */
   getProjectSettings(): Promise<ProjectSettings>;
+  /** Updates the max concurrent Tasks limit. Returns the refreshed Settings. */
+  updateMaxConcurrentTasks(limit: number): Promise<ProjectSettings>;
+  /** Toggles single-container reuse for a Task. Returns the refreshed Settings. */
+  updateReuseSandbox(reuse: boolean): Promise<ProjectSettings>;
   /** Reads a text Artifact (a LOG or DIFF) in full. */
   fetchArtifactText(taskId: string, artifactId: string): Promise<string>;
   /** Absolute URL that streams an Artifact's bytes; used for images, reports, and downloads. */
@@ -84,6 +89,14 @@ export function createApiClient({ origin, fetch = globalThis.fetch }: ApiClientO
     sendBackTask: (taskId) => post(API_PATHS.sendBackTask(taskId), TaskDetailSchema),
     decideApproval: (taskId, approvalId, input) => post(API_PATHS.decideApproval(taskId, approvalId), TaskDetailSchema, input),
     getProjectSettings: () => request(API_PATHS.project, ProjectSettingsSchema),
+    updateMaxConcurrentTasks: (limit: number) => {
+      const body: UpdateProjectSettingsInput = { maxConcurrentTasks: limit };
+      return request(API_PATHS.updateProjectSettings, ProjectSettingsSchema, { method: "PATCH", body: JSON.stringify(body) });
+    },
+    updateReuseSandbox: (reuse: boolean) => {
+      const body: UpdateProjectSettingsInput = { reuseSandbox: reuse };
+      return request(API_PATHS.updateProjectSettings, ProjectSettingsSchema, { method: "PATCH", body: JSON.stringify(body) });
+    },
     fetchArtifactText: async (taskId, artifactId) => {
       const path = API_PATHS.artifactContent(taskId, artifactId);
       const res = await fetch(`${origin}${path}`);
@@ -103,3 +116,13 @@ async function toRequestError(res: Response, path: string): Promise<ApiRequestEr
 }
 
 export const BE_ORIGIN = import.meta.env.VITE_BE_ORIGIN ?? "http://localhost:4000";
+
+/**
+ * Fixture mode is strictly opt-in: only an explicit VITE_API_MODE=fixture
+ * selects the in-memory demo client. Anything else — unset, empty, or any
+ * other value — talks to the live API at BE_ORIGIN, so a cleared database
+ * shows an empty board instead of demo Tasks.
+ */
+export function isFixtureMode(): boolean {
+  return (import.meta.env.VITE_API_MODE ?? "").trim().toLowerCase() === "fixture";
+}

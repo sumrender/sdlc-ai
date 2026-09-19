@@ -10,6 +10,8 @@ export interface OpenCodeOptions {
   sessionId?: string | null;
   timeoutMs: number;
   onLine: (line: string) => void;
+  /** Isolated OpenCode data dir so parallel sessions in one container don't share SQLite. */
+  dataDir?: string | null;
 }
 
 export interface OpenCodeResult {
@@ -20,7 +22,7 @@ export interface OpenCodeResult {
 }
 
 export async function runOpenCode(sandbox: Sandbox, options: OpenCodeOptions): Promise<OpenCodeResult> {
-  const args = ["opencode", "run", "--format", "json", "--agent", options.agent, "--model", `anthropic/${options.model}`];
+  const args = ["opencode", "run", "--format", "json", "--agent", options.agent, "--model", `opencode/${options.model}`];
   if (options.sessionId) args.push("--session", options.sessionId);
   const command = args.map(shellQuoteIfNeeded).join(" ");
 
@@ -31,7 +33,7 @@ export async function runOpenCode(sandbox: Sandbox, options: OpenCodeOptions): P
   const result = await sandbox.exec(command, {
     cwd: WORKSPACE,
     stdin: options.prompt,
-    env: { ANTHROPIC_API_KEY: options.apiKey },
+    env: { OPENCODE_API_KEY: options.apiKey, ...(options.dataDir ? { OPENCODE_DATA_DIR: options.dataDir } : {}) },
     timeoutMs: options.timeoutMs,
     onLine: (line, stream) => {
       if (!line.trim()) return;

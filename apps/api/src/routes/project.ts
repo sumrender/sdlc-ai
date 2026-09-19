@@ -1,33 +1,24 @@
 import { Hono } from "hono";
+import { UpdateProjectSettingsInputSchema } from "@sdlc-ai/shared";
 import { env } from "../env.js";
 import { errorMessage } from "../errors.js";
 import { loadManifest } from "../integrations/manifest.js";
 import { getProject } from "../pipeline/tasks.js";
 import type { WorkflowService } from "../pipeline/workflow.js";
+import { parseBody } from "./app.js";
 
 export function projectRoutes(workflow: WorkflowService) {
   const r = new Hono();
 
   r.get("/", async (c) => {
-    const project = await getProject();
-    const [github, manifest, active] = await Promise.all([
-      workflow.deps.github.connectionStatus(),
-      readManifest(workflow, project.defaultBranch),
-      workflow.activeTask(),
-    ]);
-    return c.json({
-      project,
-      github,
-      manifest,
-      deployProviders: {
-        CLOUDFLARE: Boolean(workflow.deps.deployProviders.CLOUDFLARE),
-        RENDER: Boolean(workflow.deps.deployProviders.RENDER),
-      },
-      models: { developer: env.MODEL_DEVELOPER, fast: env.MODEL_FAST },
-      sandboxImage: env.SANDBOX_IMAGE,
-      fakes: env.SDLC_FAKES,
-      activeTask: active ? { id: active.id, title: active.title, stage: active.stage } : null,
-    });
+    return c.json(await readSettings(workflow));
+  });
+
+  r.patch("/settings", async (c) => {
+    const input = await parseBody(c.req.raw, UpdateProjectSettingsInputSchema);
+    if (input.maxConcurrentTasks !== undefined) await workflow.updateMaxConcurrentTasks(input.maxConcurrentTasks);
+    if (input.reuseSandbox !== undefined) await workflow.updateReuseSandbox(input.reuseSandbox);
+    return c.json(await readSettings(workflow));
   });
 
   r.get("/manifest", async (c) => {
@@ -36,6 +27,33 @@ export function projectRoutes(workflow: WorkflowService) {
   });
 
   return r;
+}
+
+async function readSettings(workflow: WorkflowService) {
+  const project = await getProject();
+  const [github, manifest, activeTasks] = await Promise.all([
+    workflow.deps.github.connectionStatus(),
+    readManifest(workflow, project.defaultBranch),
+    workflow.activeTasks(),
+  ]);
+  const active = activeTasks.map((t) => ({ id: t.id, title: t.title, stage: t.stage }));
+  return {
+    project,
+    github,
+    manifest,
+    deployProviders: {
+      CLOUDFLARE: Boolean(workflow.deps.deployProviders.CLOUDFLARE),
+      RENDER: Boolean(workflow.deps.deployProviders.RENDER),
+    },
+    models: { developer: env.MODEL_DEVELOPER, fast: env.MODEL_FAST },
+    sandboxImage: env.SANDBOX_IMAGE,
+    fakes: env.SDLC_FAKES,
+    activeTask: active[0] ?? null,
+    activeTasks: active,
+    activeTaskCount: active.length,
+    maxConcurrentTasks: project.maxConcurrentTasks ?? 3,
+    reuseSandbox: project.reuseSandbox ?? true,
+  };
 }
 
 async function readManifest(workflow: WorkflowService, ref: string) {

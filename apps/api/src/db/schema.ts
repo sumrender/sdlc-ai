@@ -40,6 +40,8 @@ export const projects = pgTable("projects", {
   repo: text("repo").notNull(),
   defaultBranch: text("default_branch").notNull().default("main"),
   deployTargets: jsonb("deploy_targets").$type<DeployTargetConfig[]>().notNull().default([]),
+  maxConcurrentTasks: integer("max_concurrent_tasks").notNull().default(3),
+  reuseSandbox: boolean("reuse_sandbox").notNull().default(true),
   createdAt: ts("created_at").notNull().defaultNow(),
 });
 

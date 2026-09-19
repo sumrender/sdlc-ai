@@ -12,6 +12,7 @@ import { RenderDeployProvider } from "./integrations/render.js";
 import { WorkflowService } from "./pipeline/workflow.js";
 import type { DeployProvider, GitHubService, SandboxRunner } from "./ports.js";
 import { DockerSandboxRunner } from "./sandbox/docker.js";
+import { TaskSandboxPool } from "./sandbox/task-pool.js";
 import { createApp } from "./routes/app.js";
 
 const STAGING_POLL_MS = 5_000;
@@ -42,7 +43,7 @@ function wireIntegrations(): { sandboxes: SandboxRunner; github: GitHubService; 
     const github = new FakeGitHubService();
     return {
       github,
-      sandboxes: new FakeSandboxRunner(github),
+      sandboxes: new TaskSandboxPool(new FakeSandboxRunner(github)),
       deployProviders: {
         CLOUDFLARE: new FakeDeployProvider(env.FE_ORIGIN ?? "https://fe.stage.example"),
         RENDER: new FakeDeployProvider(env.BE_ORIGIN ?? "https://be.stage.example"),
@@ -50,7 +51,7 @@ function wireIntegrations(): { sandboxes: SandboxRunner; github: GitHubService; 
     };
   }
 
-  const missing = (["GITHUB_TOKEN", "ANTHROPIC_API_KEY"] as const).filter((k) => !env[k]);
+  const missing = (["GITHUB_TOKEN", "OPENCODE_API_KEY"] as const).filter((k) => !env[k]);
   if (missing.length) {
     console.error(`[api] missing required environment: ${missing.join(", ")} (or set SDLC_FAKES=true)`);
     process.exit(1);
@@ -65,7 +66,7 @@ function wireIntegrations(): { sandboxes: SandboxRunner; github: GitHubService; 
   }
   return {
     github: new OctokitGitHubService(env.GITHUB_TOKEN!, env.GITHUB_OWNER, env.GITHUB_REPO),
-    sandboxes: new DockerSandboxRunner(env.SANDBOX_IMAGE, env.DOCKER_BIN),
+    sandboxes: new TaskSandboxPool(new DockerSandboxRunner(env.SANDBOX_IMAGE, env.DOCKER_BIN)),
     deployProviders,
   };
 }

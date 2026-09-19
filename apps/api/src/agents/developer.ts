@@ -7,7 +7,7 @@ import { loadManifest } from "../integrations/manifest.js";
 import { TIMEOUTS } from "../pipeline/deps.js";
 import { tail, updateTask } from "../pipeline/tasks.js";
 import { WORKSPACE } from "../sandbox/docker.js";
-import { commitAndPush, prepareWorkspace } from "../sandbox/workspace.js";
+import { commitAndPush, prepareWorkspace, prepareWorkspaceReuse } from "../sandbox/workspace.js";
 import { AGENT_DEFINITIONS } from "./definitions.js";
 import { invokeAgent, type AgentBody, type RunContext } from "./runner.js";
 
@@ -18,13 +18,18 @@ export const developerBody: AgentBody = async (ctx) => {
 
   const manifest = await loadManifest(deps.github, project.defaultBranch);
   const branchExists = await deps.github.branchExists(branch);
-  await prepareWorkspace(sandbox, deps.github, {
+  const wsOptions = {
     ref: branchExists ? branch : project.defaultBranch,
     createBranch: branchExists ? undefined : branch,
     manifest,
-    agents: ["DEVELOPER"],
+    agents: ["DEVELOPER"] as const,
     log,
-  });
+  };
+  if ((project as { reuseSandbox?: boolean }).reuseSandbox) {
+    await prepareWorkspaceReuse(sandbox, deps.github, { ...wsOptions, agents: [...wsOptions.agents] });
+  } else {
+    await prepareWorkspace(sandbox, deps.github, { ...wsOptions, agents: [...wsOptions.agents] });
+  }
 
   let result = await invokeAgent(ctx, {
     agentName: AGENT_DEFINITIONS.DEVELOPER.name,

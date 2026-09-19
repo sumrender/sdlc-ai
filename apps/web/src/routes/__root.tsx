@@ -17,7 +17,7 @@ export const Route = createRootRouteWithContext<RouterContext>()({
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "sdlc-ai" },
+      { title: "AI powered SDLC" },
     ],
   }),
   component: RootComponent,
@@ -51,7 +51,7 @@ function Sidebar() {
           S
         </span>
         <div className="min-w-0 leading-tight">
-          <p className="truncate text-[13px] font-semibold">sdlc-ai</p>
+          <p className="truncate text-[13px] font-semibold">AI powered SDLC</p>
           <p className="truncate text-[11px] text-muted-foreground">control plane</p>
         </div>
       </div>

@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, inArray, ne, notInArray } from "drizzle-orm";
 import {
   ACTIVE_STAGES,
+  DEFAULT_MAX_CONCURRENT_TASKS,
   DEMO_TASK,
+  MAX_CONCURRENT_TASKS_ERROR_CODE,
   REVIEWERS,
   retryAvailability,
   sendBackAvailability,
@@ -15,6 +17,7 @@ import { e2eTestWriterBody } from "../agents/e2e-test-writer.js";
 import { plannerBody } from "../agents/planner.js";
 import { reviewerBody } from "../agents/reviewer.js";
 import { startAgentRun } from "../agents/runner.js";
+import { TaskSandboxPool } from "../sandbox/task-pool.js";
 import { db } from "../db/index.js";
 import {
   agentRuns,
@@ -22,6 +25,7 @@ import {
   artifacts,
   deployments,
   events,
+  projects,
   questions,
   reviews,
   tasks,
@@ -82,10 +86,18 @@ export class WorkflowService {
   private async step(taskId: string): Promise<void> {
     for (let i = 0; i < MAX_STEPS_PER_ADVANCE; i++) {
       const task = await db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1).then((r) => r[0]);
-      if (!task || task.status === "FAILED" || task.status === "COMPLETED") return;
+      if (!task || task.status === "FAILED" || task.status === "COMPLETED") {
+        if (task && (task.status === "FAILED" || task.status === "COMPLETED")) await this.destroySharedSandbox(taskId);
+        return;
+      }
       const again = await this.evaluate(task);
       if (!again) return;
     }
+  }
+
+  private async destroySharedSandbox(taskId: string): Promise<void> {
+    const pool = this.deps.sandboxes instanceof TaskSandboxPool ? this.deps.sandboxes : null;
+    if (pool) await pool.destroyTask(taskId).catch(() => undefined);
   }
 
   private evaluate(task: TaskRow): Promise<boolean> {
@@ -266,11 +278,13 @@ export class WorkflowService {
     let rows = await pollDeployments(this.deps, task);
     if (rows.length === 0 || rows.every((d) => d.status === "LIVE")) {
       await setStatus(task, "COMPLETED");
+      await this.destroySharedSandbox(task.id);
       return false;
     }
     const failed = rows.find((d) => d.status === "FAILED");
     if (failed) {
       await failTask(task.id, `Deployment of ${failed.target} via ${failed.provider} failed${failed.error ? `: ${failed.error}` : ""}`);
+      await this.destroySharedSandbox(task.id);
       return false;
     }
     if (Date.now() - task.stageEnteredAt.getTime() > TIMEOUTS.DEPLOYMENT) {
@@ -279,10 +293,14 @@ export class WorkflowService {
         await bus.emit(task.id, "DEPLOYMENT_UPDATED", { deploymentId: d.id, target: d.target, provider: d.provider, from: d.status, to: "TIMED_OUT" });
       }
       await failTask(task.id, "Deployment not live within 15 minutes");
+      await this.destroySharedSandbox(task.id);
       return false;
     }
     rows = await db.select().from(deployments).where(eq(deployments.taskId, task.id));
-    if (rows.every((d) => d.status === "LIVE")) await setStatus(task, "COMPLETED");
+    if (rows.every((d) => d.status === "LIVE")) {
+      await setStatus(task, "COMPLETED");
+      await this.destroySharedSandbox(task.id);
+    }
     return false;
   }
 
@@ -315,21 +333,50 @@ export class WorkflowService {
     return task!;
   }
 
-  async activeTask(): Promise<TaskRow | null> {
-    const [row] = await db
+  async activeTasks(): Promise<TaskRow[]> {
+    return db
       .select()
       .from(tasks)
       .where(inArray(tasks.stage, [...ACTIVE_STAGES]))
-      .orderBy(asc(tasks.createdAt))
-      .limit(1);
-    return row ?? null;
+      .orderBy(asc(tasks.createdAt));
+  }
+
+  async activeTask(): Promise<TaskRow | null> {
+    const rows = await this.activeTasks();
+    return rows[0] ?? null;
+  }
+
+  async getMaxConcurrentTasks(): Promise<number> {
+    const project = await getProject();
+    return project.maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS;
+  }
+
+  async updateMaxConcurrentTasks(limit: number): Promise<typeof projects.$inferSelect> {
+    const project = await getProject();
+    const [row] = await db.update(projects).set({ maxConcurrentTasks: limit }).where(eq(projects.id, project.id)).returning();
+    if (!row) throw new HttpError(404, "Project not found");
+    return row;
+  }
+
+  async updateReuseSandbox(reuse: boolean): Promise<typeof projects.$inferSelect> {
+    const project = await getProject();
+    const [row] = await db.update(projects).set({ reuseSandbox: reuse }).where(eq(projects.id, project.id)).returning();
+    if (!row) throw new HttpError(404, "Project not found");
+    return row;
   }
 
   async start(taskId: string): Promise<TaskRow> {
     const task = await requireTask(taskId);
     if (task.stage !== "TODO") throw new HttpError(409, `Task is already in ${task.stage}`);
-    const active = await this.activeTask();
-    if (active) throw new HttpError(409, `Another Task is active: "${active.title}" is in ${active.stage}. Only one Task may run between PLANNING and HUMAN_REVIEW.`);
+    const project = await getProject();
+    const limit = project.maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS;
+    const active = await this.activeTasks();
+    if (active.length >= limit)
+      throw new HttpError(
+        409,
+        `Max task limit reached (${active.length} of ${limit} active). Increase the limit in Settings to start more tasks.`,
+        MAX_CONCURRENT_TASKS_ERROR_CODE,
+      );
     const row = await transition(task, "PLANNING", "RUNNING");
     await this.advance(taskId);
     return (await requireTask(taskId)) ?? row;
@@ -401,8 +448,15 @@ export class WorkflowService {
   }
 
   async runDemo(): Promise<TaskRow> {
-    const active = await this.activeTask();
-    if (active) throw new HttpError(409, `Another Task is active: "${active.title}" is in ${active.stage}`);
+    const project = await getProject();
+    const limit = project.maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS;
+    const active = await this.activeTasks();
+    if (active.length >= limit)
+      throw new HttpError(
+        409,
+        `Max task limit reached (${active.length} of ${limit} active). Increase the limit in Settings to start more tasks.`,
+        MAX_CONCURRENT_TASKS_ERROR_CODE,
+      );
     const task = await this.createTask({ ...DEMO_TASK });
     return this.start(task.id);
   }
@@ -427,6 +481,8 @@ export class WorkflowService {
     await db.delete(tasks);
     await this.deps.artifacts.clear();
     this.chains.clear();
+    const pool = this.deps.sandboxes instanceof TaskSandboxPool ? this.deps.sandboxes : null;
+    if (pool) await pool.clear().catch(() => undefined);
     return { tasksDeleted: all.length, issuesClosed, pullRequestsClosed, branchesDeleted };
   }
 

@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { MANIFEST_PATH } from "@sdlc-ai/shared";
 import type { DeployLookup, DeployProvider, ExecOptions, ExecResult, GitHubService, Sandbox, SandboxRunner } from "../ports.js";
 
-// Scripted in-memory fakes so the whole pipeline can be driven over HTTP without Docker, GitHub or Anthropic.
+// Scripted in-memory fakes so the whole pipeline can be driven over HTTP without Docker, GitHub or OpenCode Zen.
 
 const FAKE_MANIFEST = JSON.stringify(
   {
@@ -122,6 +122,8 @@ export class FakeSandboxRunner implements SandboxRunner {
 }
 
 class FakeSandbox implements Sandbox {
+  private cloned = false;
+  private setupHash = "";
   constructor(
     readonly name: string,
     private readonly github: FakeGitHubService,
@@ -148,7 +150,12 @@ class FakeSandbox implements Sandbox {
     if (command.startsWith("git status --porcelain") || command.startsWith("git diff --cached --name-only")) {
       return ok(this.name.includes("e2e") ? "fe/e2e/generated-coverage.spec.ts" : "");
     }
-    if (command.startsWith("git clone")) return ok("Cloning into '/workspace'...");
+    if (command.includes("test -d") && command.includes(".git")) return ok(this.cloned ? "SDLC_HAS_GIT" : "SDLC_NO_GIT");
+    if (command.startsWith("cat /tmp/.sdlc-setup-hash")) return ok(this.setupHash);
+    if (command.startsWith("git clone")) {
+      this.cloned = true;
+      return ok("Cloning into '/workspace'...");
+    }
     return ok();
   }
 
@@ -178,7 +185,9 @@ class FakeSandbox implements Sandbox {
     ].join("\n");
   }
 
-  async writeFile() {}
+  async writeFile(path: string, content: string) {
+    if (path === "/tmp/.sdlc-setup-hash") this.setupHash = content;
+  }
 
   async copyOut(containerPath: string, hostDir: string) {
     // Materialize stub artifacts so importDir picks up a VIDEO + report.

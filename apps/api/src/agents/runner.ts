@@ -9,6 +9,7 @@ import type { Sandbox } from "../ports.js";
 import type { Deps } from "../pipeline/deps.js";
 import { failTask, getProject, getTask } from "../pipeline/tasks.js";
 import { runOpenCode, type OpenCodeResult } from "../sandbox/opencode.js";
+import { TaskSandboxPool } from "../sandbox/task-pool.js";
 
 export interface RunContext {
   deps: Deps;
@@ -51,11 +52,18 @@ async function execute(deps: Deps, run: AgentRunRow, body: AgentBody): Promise<v
     if (!task) throw new Error("Task no longer exists");
     const project = await getProject();
     log(`Starting ${run.agent} (attempt ${run.attempt}, model ${run.model})`);
-    sandbox = await deps.sandboxes.create({
-      name: `sdlc-${run.agent.toLowerCase().replace(/_/g, "-")}-${run.id.slice(0, 8)}-a${run.attempt}`,
-      // The Planner's answer run resumes the question run's session from a new Sandbox.
-      sessionVolume: run.agent === "PLANNER" ? `sdlc-ai-opencode-${run.taskId}` : undefined,
-    });
+    const pool = deps.sandboxes instanceof TaskSandboxPool ? deps.sandboxes : null;
+    const reuse = Boolean(pool && (project as { reuseSandbox?: boolean }).reuseSandbox);
+    if (reuse && pool) {
+      sandbox = await pool.acquire(task.id);
+      log(`Reusing container ${sandbox.name} (setup once, fresh session)`);
+    } else {
+      sandbox = await deps.sandboxes.create({
+        name: `sdlc-${run.agent.toLowerCase().replace(/_/g, "-")}-${run.id.slice(0, 8)}-a${run.attempt}`,
+        // The Planner's answer run resumes the question run's session from a new Sandbox.
+        sessionVolume: run.agent === "PLANNER" ? `sdlc-ai-opencode-${run.taskId}` : undefined,
+      });
+    }
     await body({ deps, sandbox, log, run, task, project });
     log(`${run.agent} completed`);
   } catch (e) {
@@ -68,7 +76,9 @@ async function execute(deps: Deps, run: AgentRunRow, body: AgentBody): Promise<v
     }
     log(`ERROR: ${error}`);
   } finally {
-    if (sandbox) await sandbox.destroy().catch(() => undefined);
+    const pool = deps.sandboxes instanceof TaskSandboxPool ? deps.sandboxes : null;
+    const shared = Boolean(sandbox && pool && pool.has(run.taskId));
+    if (sandbox && !shared) await sandbox.destroy().catch(() => undefined);
     await deps.artifacts
       .saveLog({
         taskId: run.taskId,
@@ -105,6 +115,7 @@ export interface InvokeOptions {
   sessionId?: string | null;
   timeoutMs: number;
   label: string;
+  dataDir?: string | null;
 }
 
 export async function invokeAgent(ctx: RunContext, options: InvokeOptions): Promise<OpenCodeResult> {
@@ -113,10 +124,11 @@ export async function invokeAgent(ctx: RunContext, options: InvokeOptions): Prom
       agent: options.agentName,
       model: ctx.run.model,
       prompt: options.prompt,
-      apiKey: env.ANTHROPIC_API_KEY ?? "",
+      apiKey: env.OPENCODE_API_KEY ?? "",
       sessionId,
       timeoutMs: options.timeoutMs,
       onLine: ctx.log,
+      dataDir: options.dataDir ?? null,
     });
 
   let result = await call(options.sessionId);

@@ -1,6 +1,8 @@
 import {
+  DEFAULT_MAX_CONCURRENT_TASKS,
   DEMO_TASK,
-  findBlockingTask,
+  findBlockingTasks,
+  MAX_CONCURRENT_TASKS_ERROR_CODE,
   retryAvailability,
   sendBackAvailability,
   REVIEWERS,
@@ -130,6 +132,8 @@ const FIXTURE_SETTINGS: ProjectSettings = {
       { target: "FE", provider: "CLOUDFLARE", pathPrefix: "fe/", url: "https://meme-fe.stage.example" },
       { target: "BE", provider: "RENDER", pathPrefix: "be/", url: "https://meme-be.stage.example" },
     ],
+    maxConcurrentTasks: DEFAULT_MAX_CONCURRENT_TASKS,
+    reuseSandbox: true,
     createdAt: new Date(Date.now() - 7 * 24 * 60 * 60_000).toISOString(),
   },
   github: { ok: true, login: "sdlc-ai[bot]" },
@@ -146,12 +150,18 @@ const FIXTURE_SETTINGS: ProjectSettings = {
   sandboxImage: "sdlc-ai-sandbox:local",
   fakes: true,
   activeTask: null,
+  activeTasks: [],
+  activeTaskCount: 0,
+    maxConcurrentTasks: DEFAULT_MAX_CONCURRENT_TASKS,
+    reuseSandbox: true,
 };
 
 const isReviewer = (agent: Agent): agent is Reviewer => (REVIEWERS as readonly Agent[]).includes(agent);
 
 export function createFixtureApi(): FixtureApi {
   let tasks: BoardTask[] = [];
+  let fixtureLimit = DEFAULT_MAX_CONCURRENT_TASKS;
+  let fixtureReuseSandbox = true;
   const details = new Map<string, DetailState>();
   const sources = new Set<FixtureEventSource>();
   const timers = new Set<ReturnType<typeof setTimeout>>();
@@ -455,8 +465,7 @@ export function createFixtureApi(): FixtureApi {
   };
 
   const client: ApiClient = {
-    listTasks: async () => tasks,
-    createTask: async (input: CreateTaskInput) => {
+    listTasks: async () => tasks,    createTask: async (input: CreateTaskInput) => {
       const task = makeTask(input);
       emit(task.id, "TASK_CREATED", { task });
       return task;
@@ -464,8 +473,13 @@ export function createFixtureApi(): FixtureApi {
     startTask: async (taskId) => {
       const task = find(taskId);
       if (task.stage !== "TODO") throw new ApiRequestError(409, "Only TODO Tasks can be started", "NOT_TODO");
-      const blocker = findBlockingTask(tasks, taskId);
-      if (blocker) throw new ApiRequestError(409, `"${blocker.title}" is still active`, "TASK_ACTIVE");
+      const blockers = findBlockingTasks(tasks, taskId, fixtureLimit);
+      if (blockers.length > 0)
+        throw new ApiRequestError(
+          409,
+          `Max task limit reached (${blockers.length} of ${fixtureLimit} active). Increase the limit in Settings to start more tasks.`,
+          MAX_CONCURRENT_TASKS_ERROR_CODE,
+        );
       sequence([
         () => {
           moveTo(taskId, "PLANNING", "RUNNING");
@@ -543,8 +557,25 @@ export function createFixtureApi(): FixtureApi {
       return toDetail(taskId);
     },
     getProjectSettings: async () => {
-      const active = tasks.find((t) => t.stage !== "TODO" && t.stage !== "STAGING") ?? null;
-      return { ...FIXTURE_SETTINGS, activeTask: active ? { id: active.id, title: active.title, stage: active.stage } : null };
+      const active = tasks.filter((t) => t.stage !== "TODO" && t.stage !== "STAGING");
+      const summary = active.map((t) => ({ id: t.id, title: t.title, stage: t.stage }));
+      return {
+        ...FIXTURE_SETTINGS,
+        project: { ...FIXTURE_SETTINGS.project, maxConcurrentTasks: fixtureLimit, reuseSandbox: fixtureReuseSandbox },
+        activeTask: summary[0] ?? null,
+        activeTasks: summary,
+        activeTaskCount: summary.length,
+        maxConcurrentTasks: fixtureLimit,
+        reuseSandbox: fixtureReuseSandbox,
+      };
+    },
+    updateMaxConcurrentTasks: async (limit: number) => {
+      fixtureLimit = limit;
+      return client.getProjectSettings();
+    },
+    updateReuseSandbox: async (reuse: boolean) => {
+      fixtureReuseSandbox = reuse;
+      return client.getProjectSettings();
     },
     fetchArtifactText: async (taskId, artifactId) => {
       const content = detailOf(taskId).logs.get(artifactId);

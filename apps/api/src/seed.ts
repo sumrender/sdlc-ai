@@ -373,6 +373,7 @@ function crc32(buf: Buffer): number {
 }
 
 async function upsertProject(): Promise<string> {
+  const [existing] = await db.select().from(projects).limit(1);
   const values = {
     name: env.GITHUB_REPO,
     owner: env.GITHUB_OWNER,
@@ -382,8 +383,8 @@ async function upsertProject(): Promise<string> {
       { target: "FE" as const, provider: "CLOUDFLARE" as const, pathPrefix: "fe/", url: env.FE_ORIGIN ?? null },
       { target: "BE" as const, provider: "RENDER" as const, pathPrefix: "be/", url: env.BE_ORIGIN ?? null },
     ],
+    maxConcurrentTasks: existing?.maxConcurrentTasks ?? 3,
   };
-  const [existing] = await db.select().from(projects).limit(1);
   if (existing) {
     await db.update(projects).set(values).where(eq(projects.id, existing.id));
     return existing.id;

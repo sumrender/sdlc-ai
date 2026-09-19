@@ -1,4 +1,4 @@
-# sdlc-ai
+# AI powered SDLC
 
 An AI-native SDLC control plane: a Task moves through seven fixed Stages (TODO, PLANNING,
 DEVELOPMENT, E2E, AGENT REVIEW, HUMAN REVIEW, STAGING) on a live Kanban. OpenCode agents run
@@ -26,9 +26,9 @@ cp .env.example .env        # fill in secrets, or set SDLC_FAKES=true
 pnpm dev:local
 ```
 
-`pnpm dev:local` starts Postgres on **:5959**, runs migrations, seeds one Project and Tasks
-in every Stage and Status (with Agent Runs, a Question, Test Runs, Reviews, an Approval,
-Deployments, Artifacts, and Events), then starts the web app and the API.
+`pnpm dev:local` starts Postgres on **:5959** and then the web app and the API
+against an empty database (migrations run automatically on API boot). To populate a
+demo board, run `pnpm db:seed` explicitly.
 
 With `SDLC_FAKES=true` the API replaces Docker, GitHub, and the deploy providers with
 scripted in-memory fakes so the whole pipeline can be driven without secrets. On boot the
@@ -40,10 +40,10 @@ the web app.
 
 ```sh
 pnpm sandbox:build                 # build sdlc-ai-sandbox:local (auto-picks Dockerfile.windows on Windows)
-ANTHROPIC_API_KEY=... pnpm sandbox:smoke   # verify the image once per change
+OPENCODE_API_KEY=... pnpm sandbox:smoke   # verify the image once per change
 ```
 
-Then set `GITHUB_TOKEN`, `ANTHROPIC_API_KEY`, and the Render / Cloudflare variables in
+Then set `GITHUB_TOKEN`, `OPENCODE_API_KEY`, and the Render / Cloudflare variables in
 `.env`, set `SDLC_FAKES=false`, and `pnpm dev`.
 
 ## Scripts

@@ -1,7 +1,8 @@
 import {
   AgentRunStartedPayloadSchema,
   ApprovalRequestedPayloadSchema,
-  findBlockingTask,
+  DEFAULT_MAX_CONCURRENT_TASKS,
+  findBlockingTasks,
   QuestionCreatedPayloadSchema,
   STAGES,
   TaskCreatedPayloadSchema,
@@ -28,15 +29,19 @@ export function groupTasksByStage(tasks: readonly BoardTask[]): StageColumn[] {
 
 export type StartAvailability = { allowed: true } | { allowed: false; reason: string };
 
-export function startAvailability(tasks: readonly BoardTask[], candidate: BoardTask): StartAvailability {
+export function startAvailability(
+  tasks: readonly BoardTask[],
+  candidate: BoardTask,
+  limit: number = DEFAULT_MAX_CONCURRENT_TASKS,
+): StartAvailability {
   if (candidate.stage !== "TODO") {
     return { allowed: false, reason: "Only TODO Tasks can be started." };
   }
-  const blocker = findBlockingTask(tasks, candidate.id);
-  if (blocker) {
+  const blockers = findBlockingTasks(tasks, candidate.id, limit);
+  if (blockers.length > 0) {
     return {
       allowed: false,
-      reason: `Waiting for "${blocker.title}" to reach STAGING. One Task runs at a time.`,
+      reason: `Max task limit reached (${blockers.length} of ${limit} active). Increase the limit in Settings to start more tasks.`,
     };
   }
   return { allowed: true };

@@ -8,9 +8,9 @@ import { latestTestRun, tail } from "../pipeline/tasks.js";
 import { WORKSPACE } from "../sandbox/docker.js";
 import { extractJsonBlock } from "../sandbox/opencode.js";
 import { shellQuote } from "../sandbox/process.js";
-import { prepareWorkspace } from "../sandbox/workspace.js";
+import { prepareWorkspace, prepareWorkspaceReuse } from "../sandbox/workspace.js";
 import { AGENT_DEFINITIONS } from "./definitions.js";
-import { invokeAgent, type AgentBody } from "./runner.js";
+import { invokeAgent, type AgentBody, type RunContext } from "./runner.js";
 
 const REASK_PROMPT =
   "Your previous message did not end with a valid fenced JSON block. Reply with ONLY the fenced JSON block of shape " +
@@ -30,7 +30,15 @@ export const reviewerBody =
     if (!task.branchName) throw new Error("Task has no branch name");
 
     const manifest = await loadManifest(deps.github, project.defaultBranch);
-    await prepareWorkspace(sandbox, deps.github, { ref: task.branchName, manifest, agents: [reviewer], log });
+    const reuse = Boolean((project as { reuseSandbox?: boolean }).reuseSandbox);
+    if (reuse) {
+      await prepareWorkspaceReuse(sandbox, deps.github, { ref: task.branchName, manifest, agents: [reviewer], log });
+    } else {
+      await prepareWorkspace(sandbox, deps.github, { ref: task.branchName, manifest, agents: [reviewer], log });
+    }
+    // Isolated OpenCode data dir so 4 parallel reviewer sessions in one
+    // container don't contend on the same SQLite store. Fresh session always.
+    const dataDir = reuse ? `/tmp/opencode-${reviewer.toLowerCase()}` : null;
 
     const diff = await sandbox.exec(`git diff ${shellQuote(`origin/${project.defaultBranch}`)}...HEAD`, { cwd: WORKSPACE });
     const testRun = await latestTestRun(task.id);
@@ -40,6 +48,7 @@ export const reviewerBody =
       prompt: reviewerPrompt(reviewer, task, diff.stdout, testRun),
       timeoutMs: TIMEOUTS.REVIEWER,
       label: reviewer,
+      dataDir,
     });
     let output = parseReviewOutput(result.text);
     if (!output) {
@@ -50,6 +59,7 @@ export const reviewerBody =
         sessionId: result.sessionId,
         timeoutMs: TIMEOUTS.REVIEWER,
         label: reviewer,
+        dataDir,
       });
       output = parseReviewOutput(result.text);
     }

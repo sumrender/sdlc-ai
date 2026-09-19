@@ -47,6 +47,106 @@ export async function prepareWorkspace(sandbox: Sandbox, github: GitHubService, 
   }
 }
 
+// Reuse path for `reuseSandbox`: keep the container, switch refs, skip setup
+// when the manifest hash matches. Always rewrites the current agent files and
+// resets to a clean git state (auto-reset + continue) before handing over.
+export async function prepareWorkspaceReuse(sandbox: Sandbox, github: GitHubService, options: WorkspaceOptions): Promise<void> {
+  const probe = await sandbox.exec(`test -d ${WORKSPACE}/.git && echo SDLC_HAS_GIT || echo SDLC_NO_GIT`, {});
+  if (!probe.stdout.includes("SDLC_HAS_GIT")) {
+    await prepareWorkspace(sandbox, github, options);
+    await markSetupDone(sandbox, options.manifest);
+    return;
+  }
+
+  options.log(`Reusing container workspace for ${options.ref}`);
+  await ensureCleanOrReset(sandbox, options.log);
+  const ga = gitWithAuth(github);
+  const fetch = await sandbox.exec(`${ga} fetch --quiet origin`, { cwd: WORKSPACE, timeoutMs: TIMEOUTS.WORKSPACE });
+  if (fetch.exitCode !== 0) throw new WorkspaceError(`git fetch failed: ${fetch.stderr.trim().slice(-1000)}`);
+
+  if (options.createBranch) {
+    const exists = await sandbox.exec(`git rev-parse --verify --quiet ${shellQuote(`refs/heads/${options.createBranch}`)}`, { cwd: WORKSPACE });
+    if (exists.exitCode === 0) {
+      const co = await sandbox.exec(`git checkout -q ${shellQuote(options.createBranch)} && git reset -q --hard HEAD`, { cwd: WORKSPACE });
+      if (co.exitCode !== 0) throw new WorkspaceError(`git checkout failed: ${co.stderr.trim()}`);
+    } else {
+      // Branch does not exist locally: base it on the requested ref from origin.
+      const co = await sandbox.exec(
+        `git checkout -q -b ${shellQuote(options.createBranch)} ${shellQuote(`origin/${options.ref}`)} || git checkout -q -b ${shellQuote(options.createBranch)}`,
+        { cwd: WORKSPACE },
+      );
+      if (co.exitCode !== 0) throw new WorkspaceError(`git checkout -b failed: ${co.stderr.trim()}`);
+    }
+  } else {
+    const co = await sandbox.exec(`git checkout -q ${shellQuote(options.ref)} 2>/dev/null || git checkout -q origin/${shellQuote(options.ref)} -B ${shellQuote(options.ref)}`, {
+      cwd: WORKSPACE,
+    });
+    if (co.exitCode !== 0) {
+      const fallback = await sandbox.exec(`git checkout -q -B ${shellQuote(options.ref)} ${shellQuote(`origin/${options.ref}`)}`, { cwd: WORKSPACE });
+      if (fallback.exitCode !== 0) throw new WorkspaceError(`git checkout failed: ${fallback.stderr.trim()}`);
+    }
+    const reset = await sandbox.exec(`git reset -q --hard ${shellQuote(`origin/${options.ref}`)}`, { cwd: WORKSPACE });
+    if (reset.exitCode !== 0) throw new WorkspaceError(`git reset failed: ${reset.stderr.trim()}`);
+  }
+
+  if (await isSetupFresh(sandbox, options.manifest)) {
+    options.log("Setup skipped (cached for this container)");
+  } else {
+    for (const command of options.manifest.setup) {
+      options.log(`$ ${command}`);
+      const result = await sandbox.exec(command, { cwd: WORKSPACE, timeoutMs: TIMEOUTS.WORKSPACE, onLine: options.log });
+      if (result.timedOut) throw new WorkspaceError(`setup command timed out: ${command}`);
+      if (result.exitCode !== 0) throw new WorkspaceError(`setup command failed (exit ${result.exitCode}): ${command}`);
+    }
+    await markSetupDone(sandbox, options.manifest);
+  }
+
+  for (const agent of options.agents) {
+    const definition = AGENT_DEFINITIONS[agent];
+    await sandbox.writeFile(`${WORKSPACE}/.opencode/agent/${definition.name}.md`, definition.content);
+  }
+  await ensureCleanOrReset(sandbox, options.log, { afterCheckout: true });
+}
+
+function setupHash(manifest: ProjectManifest): string {
+  return JSON.stringify(manifest.setup ?? []);
+}
+
+async function isSetupFresh(sandbox: Sandbox, manifest: ProjectManifest): Promise<boolean> {
+  try {
+    const r = await sandbox.exec(`cat /tmp/.sdlc-setup-hash 2>/dev/null || echo ""`, {});
+    return r.stdout.trim() === setupHash(manifest) && r.stdout.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function markSetupDone(sandbox: Sandbox, manifest: ProjectManifest): Promise<void> {
+  await sandbox.writeFile("/tmp/.sdlc-setup-hash", setupHash(manifest)).catch(() => undefined);
+}
+
+/**
+ * Clean-guard: `git status --porcelain` must be empty before switching agents.
+ * Auto-reset + continue: drop injected agent files, hard-reset tracked files,
+ * remove untracked leftovers (overlay configs, test-results), then re-check.
+ */
+export async function ensureCleanOrReset(sandbox: Sandbox, log: (line: string) => void, opts: { afterCheckout?: boolean } = {}): Promise<void> {
+  const status = await sandbox.exec(`git status --porcelain`, { cwd: WORKSPACE });
+  if (status.exitCode !== 0) throw new WorkspaceError(`git status failed: ${status.stderr.trim()}`);
+  if (!status.stdout.trim()) return;
+  log(`Workspace not clean before switch; auto-resetting (${status.stdout.split("\n").filter(Boolean).length} file(s))`);
+  await sandbox.exec(`rm -f .opencode/agent/sdlc-*.md; rmdir .opencode/agent 2>/dev/null || true; rmdir .opencode 2>/dev/null || true; rm -f /tmp/sdlc-pw.config.ts`, {
+    cwd: WORKSPACE,
+  });
+  const reset = await sandbox.exec(`git reset -q --hard HEAD && git clean -fdq`, { cwd: WORKSPACE });
+  if (reset.exitCode !== 0) throw new WorkspaceError(`workspace reset failed: ${reset.stderr.trim()}`);
+  const recheck = await sandbox.exec(`git status --porcelain`, { cwd: WORKSPACE });
+  if (recheck.stdout.trim()) {
+    throw new WorkspaceError(`workspace still dirty after reset: ${recheck.stdout.trim().slice(0, 1000)}`);
+  }
+  log(opts.afterCheckout ? "Workspace clean" : "Workspace reset to clean");
+}
+
 // Shared commit+push used by the Developer and the E2E test writer.
 // Returns the committed sha, or null when there was nothing to commit.
 export async function commitAndPush(

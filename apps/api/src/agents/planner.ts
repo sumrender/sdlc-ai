@@ -7,7 +7,7 @@ import { loadManifest } from "../integrations/manifest.js";
 import { TIMEOUTS } from "../pipeline/deps.js";
 import { answeredQuestion, getAgentRun, getTask, setStatus, updateTask } from "../pipeline/tasks.js";
 import { extractJsonBlock } from "../sandbox/opencode.js";
-import { prepareWorkspace } from "../sandbox/workspace.js";
+import { prepareWorkspace, prepareWorkspaceReuse } from "../sandbox/workspace.js";
 import { AGENT_DEFINITIONS } from "./definitions.js";
 import { invokeAgent, type AgentBody } from "./runner.js";
 
@@ -19,7 +19,11 @@ export const plannerBody: AgentBody = async (ctx) => {
   const { deps, sandbox, log, task, project } = ctx;
 
   const manifest = await loadManifest(deps.github, project.defaultBranch);
-  await prepareWorkspace(sandbox, deps.github, { ref: project.defaultBranch, manifest, agents: ["PLANNER"], log });
+  if ((project as { reuseSandbox?: boolean }).reuseSandbox) {
+    await prepareWorkspaceReuse(sandbox, deps.github, { ref: project.defaultBranch, manifest, agents: ["PLANNER"], log });
+  } else {
+    await prepareWorkspace(sandbox, deps.github, { ref: project.defaultBranch, manifest, agents: ["PLANNER"], log });
+  }
 
   const answered = await answeredQuestion(task.id, task.stageEnteredAt);
   const previousSession = answered ? ((await getAgentRun(answered.agentRunId))?.opencodeSessionId ?? null) : null;

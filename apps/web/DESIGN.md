@@ -43,7 +43,7 @@ quiet gray text, blue link affordances. No dark mode, no phosphor, no glow.
 - **App shell**: left sidebar (product mark, account switcher, grouped nav:
   Pipeline → Board / Task detail context / Activity; Operate → Deployments,
   Reviews, Tests; Configure → Settings), top bar with breadcrumb
-  (sdlc-ai › Board / task title), right side Ask/Support-ish actions replaced
+  (AI powered SDLC › Board / task title), right side Ask/Support-ish actions replaced
   by Run Demo / Reset Demo / New Task. Board page gets a CF-style tab strip
   (Board / Activity / Deployments anchors).
 - **Board**: gray ground, 7 compact columns as white cards with gray header

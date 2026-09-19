@@ -9,7 +9,8 @@ import { loadManifest } from "../integrations/manifest.js";
 import type { ProjectManifest } from "@sdlc-ai/shared";
 import type { Sandbox } from "../ports.js";
 import { WORKSPACE } from "../sandbox/docker.js";
-import { prepareWorkspace } from "../sandbox/workspace.js";
+import { prepareWorkspace, prepareWorkspaceReuse } from "../sandbox/workspace.js";
+import { TaskSandboxPool } from "../sandbox/task-pool.js";
 import { TIMEOUTS, type Deps } from "./deps.js";
 import { postE2EReport } from "./e2e-report.js";
 import { failTask, getProject, getTask, tail } from "./tasks.js";
@@ -47,8 +48,17 @@ async function execute(deps: Deps, run: TestRunRow): Promise<void> {
     const manifest = await loadManifest(deps.github, project.defaultBranch);
     await db.update(testRuns).set({ command: manifest.e2e.command }).where(eq(testRuns.id, run.id));
 
-    sandbox = await deps.sandboxes.create({ name: `sdlc-e2e-${run.id.slice(0, 8)}-a${run.attempt}` });
-    await prepareWorkspace(sandbox, deps.github, { ref: task.branchName, manifest, agents: [], log });
+    sandbox = null;
+    const pool = deps.sandboxes instanceof TaskSandboxPool ? deps.sandboxes : null;
+    const reuse = Boolean(pool && (project as { reuseSandbox?: boolean }).reuseSandbox);
+    if (reuse && pool) {
+      sandbox = await pool.acquire(task.id);
+      log(`Reusing container ${sandbox.name} for Test Run`);
+      await prepareWorkspaceReuse(sandbox, deps.github, { ref: task.branchName, manifest, agents: [], log });
+    } else {
+      sandbox = await deps.sandboxes.create({ name: `sdlc-e2e-${run.id.slice(0, 8)}-a${run.attempt}` });
+      await prepareWorkspace(sandbox, deps.github, { ref: task.branchName, manifest, agents: [], log });
+    }
 
     const cwd = manifest.e2e.cwd === "." ? WORKSPACE : `${WORKSPACE}/${manifest.e2e.cwd}`;
     const forced = await forceVideoOn(sandbox, manifest, cwd, log);
@@ -97,7 +107,11 @@ async function execute(deps: Deps, run: TestRunRow): Promise<void> {
     }
     log(`ERROR: ${error}`);
   } finally {
-    if (sandbox) await sandbox.destroy().catch(() => undefined);
+    if (sandbox) {
+      const pool = deps.sandboxes instanceof TaskSandboxPool ? deps.sandboxes : null;
+      const shared = Boolean(pool && pool.has(run.taskId));
+      if (!shared) await sandbox.destroy().catch(() => undefined);
+    }
     await deps.artifacts
       .saveLog({ taskId: run.taskId, testRunId: run.id, name: `e2e-attempt-${run.attempt}.log`, content: lines.join("\n") })
       .catch((e) => console.error("[e2e] failed to save log artifact", e));

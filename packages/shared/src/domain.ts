@@ -14,6 +14,11 @@ export type Stage = z.infer<typeof StageSchema>;
 
 export const ACTIVE_STAGES = ["PLANNING", "DEVELOPMENT", "E2E", "AGENT_REVIEW", "HUMAN_REVIEW"] as const satisfies readonly Stage[];
 
+export const DEFAULT_MAX_CONCURRENT_TASKS = 3;
+export const MAX_CONCURRENT_TASKS_LIMIT = 20;
+export const MaxConcurrentTasksSchema = z.number().int().min(1).max(MAX_CONCURRENT_TASKS_LIMIT);
+export type MaxConcurrentTasks = z.infer<typeof MaxConcurrentTasksSchema>;
+
 export const TASK_STATUSES = ["READY", "RUNNING", "WAITING", "FAILED", "COMPLETED"] as const;
 export const TaskStatusSchema = z.enum(TASK_STATUSES);
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
@@ -134,6 +139,8 @@ export const ProjectSchema = z.object({
   repo: z.string(),
   defaultBranch: z.string(),
   deployTargets: z.array(DeployTargetConfigSchema),
+  maxConcurrentTasks: MaxConcurrentTasksSchema.default(DEFAULT_MAX_CONCURRENT_TASKS),
+  reuseSandbox: z.boolean().default(true),
   createdAt: iso,
 });
 export type Project = z.infer<typeof ProjectSchema>;

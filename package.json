@@ -4,7 +4,7 @@
   "packageManager": "pnpm@9.15.0",
   "scripts": {
     "dev": "pnpm -r --parallel dev",
-    "dev:local": "pnpm db:up && pnpm db:seed && pnpm dev",
+    "dev:local": "pnpm db:up && pnpm dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "db:up": "docker compose up -d postgres",
