@@ -23,10 +23,17 @@ without inventing a new reject budget.
   `sandbox/workspace.ts:commitAndPush` helper, and reports `SPEC_PATH:`. The next
   Test Run executes it; loop accounting stays inside ADR-0003's one E2E loop.
 - Forced video (`pipeline/e2e.ts:forceVideoOn`): Playwright commands run with a
-  temporary overlay config at `/tmp/sdlc-pw.config.ts` extending the project
-  config with `video: 'retain-on-failure'` (repo config never modified);
-  non-Playwright commands get env-only injection + a warning. The conventional
-  `test-results` dir is appended to the import list for that run only.
+  temporary overlay config `sdlc-pw.config.ts` written *beside* the project
+  config it extends, adding `video: 'retain-on-failure'` (repo config never
+  modified); non-Playwright commands get env-only injection + a warning. The
+  conventional `test-results` dir is appended to the import list for that run
+  only. Placement is load-bearing: Playwright resolves `testDir`, `outputDir`,
+  reporter folders and `webServer.cwd` against the directory of the config it
+  loaded, so an overlay outside the Workspace relocates the whole suite. The
+  overlay is added to `.git/info/exclude` (the Workspace is reused and the
+  Developer stages with `git add -A`) and deleted when the Test Run ends.
+  The `--config` flag is appended via `appendCliArg`, which inserts the `--`
+  separator for `npm`/`pnpm` run wrappers that would otherwise swallow it.
 - PR report (`pipeline/e2e-report.ts`): after every finished suite, upsert one
   `<!-- sdlc-ai-e2e -->` marker comment and refresh a `Latest E2E` PR-body section
   (read-modify-write; human merge is later-stage). The first VIDEO artifact is

@@ -44,7 +44,7 @@ import { bus } from "../events/bus.js";
 import { loadManifest } from "../integrations/manifest.js";
 import { TIMEOUTS, type Deps } from "./deps.js";
 import { computeTouchedTargets, isTerminalDeployment, pollDeployments } from "./deployments.js";
-import { e2eFeedback, startTestRun } from "./e2e.js";
+import { describeSummary, e2eFeedback, startTestRun } from "./e2e.js";
 import { ensureCoverage } from "./e2e-coverage.js";
 import {
   failTask,
@@ -211,7 +211,7 @@ export class WorkflowService {
       await transition(task, "DEVELOPMENT", "RUNNING");
       return true;
     }
-    await failTask(task.id, `E2E failed again after the automatic Reject loop (${run.failed ?? "?"} failed)`);
+    await failTask(task.id, `E2E failed again after the automatic Reject loop (${describeSummary(run)})`);
     return false;
   }
 

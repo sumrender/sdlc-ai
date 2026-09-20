@@ -157,8 +157,9 @@ export async function ensureCleanOrReset(sandbox: Sandbox, log: (line: string) =
   if (status.exitCode !== 0) throw new WorkspaceError(`git status failed: ${status.stderr.trim()}`);
   if (!status.stdout.trim()) return;
   log(`Workspace not clean before switch; auto-resetting (${status.stdout.split("\n").filter(Boolean).length} file(s))`);
-  // Remove stale overlay config (but never touch .opencode/ — agent files are per-run).
-  await sandbox.exec(`rm -f /tmp/sdlc-pw.config.ts`, { cwd: WORKSPACE });
+  // Remove stale overlay configs (but never touch .opencode/ — agent files are per-run).
+  // They live beside the project's Playwright config, so search the Workspace.
+  await sandbox.exec(`find . -maxdepth 3 -name sdlc-pw.config.ts -not -path './node_modules/*' -delete`, { cwd: WORKSPACE });
   const reset = await sandbox.exec(`git reset -q --hard HEAD && git clean -fdq -- . ':!.opencode'`, { cwd: WORKSPACE });
   if (reset.exitCode !== 0) throw new WorkspaceError(`workspace reset failed: ${reset.stderr.trim()}`);
   const recheck = await sandbox.exec(`git status --porcelain -- . ':!.opencode'`, { cwd: WORKSPACE });

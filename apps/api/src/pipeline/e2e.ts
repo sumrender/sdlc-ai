@@ -9,6 +9,7 @@ import { loadManifest } from "../integrations/manifest.js";
 import type { E2eConfig } from "@sdlc-ai/shared";
 import type { Sandbox } from "../ports.js";
 import { WORKSPACE } from "../sandbox/docker.js";
+import { shellQuote, shellQuoteIfNeeded } from "../sandbox/process.js";
 import { prepareWorkspace, prepareWorkspaceReuse } from "../sandbox/workspace.js";
 import { TaskSandboxPool } from "../sandbox/task-pool.js";
 import { TIMEOUTS, type Deps } from "./deps.js";
@@ -40,6 +41,7 @@ async function execute(deps: Deps, run: TestRunRow): Promise<void> {
   let output: string | null = null;
   let summary = { passed: null as number | null, failed: null as number | null, skipped: null as number | null };
   let sandbox: Sandbox | null = null;
+  let cleanupOverlay: (() => Promise<void>) | null = null;
 
   try {
     const task = await getTask(run.taskId);
@@ -73,6 +75,7 @@ async function execute(deps: Deps, run: TestRunRow): Promise<void> {
       const e2e = manifest.e2e;
       const cwd = e2e.cwd === "." ? WORKSPACE : `${WORKSPACE}/${e2e.cwd}`;
       const forced = await forceVideoOn(sandbox, e2e, cwd, log);
+      cleanupOverlay = forced.cleanup;
       const command = forced.command;
       const env = { ...e2e.env, PLAYWRIGHT_VIDEO: "on" };
       log(`$ ${command}  (cwd ${cwd})`);
@@ -107,7 +110,7 @@ async function execute(deps: Deps, run: TestRunRow): Promise<void> {
         });
         log(`Copied ${count} artifact file(s) from ${artifactPath}`);
       }
-      log(`Test Run finished with exit code ${exitCode}: ${summary.passed ?? 0} passed, ${summary.failed ?? 0} failed`);
+      log(`Test Run finished with exit code ${exitCode}: ${describeSummary(summary)}`);
     }
   } catch (e) {
     error = errorMessage(e);
@@ -121,6 +124,9 @@ async function execute(deps: Deps, run: TestRunRow): Promise<void> {
     }
     log(`ERROR: ${error}`);
   } finally {
+    // The overlay lives inside the Workspace (Playwright resolves a config's
+    // relative paths against its own directory), so it must not outlive the run.
+    if (cleanupOverlay) await cleanupOverlay().catch(() => undefined);
     if (sandbox) {
       const pool = deps.sandboxes instanceof TaskSandboxPool ? deps.sandboxes : null;
       const shared = Boolean(pool && pool.has(run.taskId));
@@ -177,16 +183,41 @@ export function parsePlaywrightSummary(text: string) {
   };
 }
 
+// Playwright prints no summary when the suite never ran (bad config, web server
+// that would not start). Reporting that as "0 passed, 0 failed" reads like a
+// green-but-empty suite, so say plainly that nothing ran.
+export function describeSummary(summary: { passed: number | null; failed: number | null }): string {
+  if (summary.passed === null && summary.failed === null) return "no results reported (the suite did not run)";
+  return `${summary.passed ?? 0} passed, ${summary.failed ?? 0} failed`;
+}
+
 export function e2eFeedback(run: TestRunRow): string {
-  return `The E2E Test Run failed (exit code ${run.exitCode ?? "n/a"}; ${run.passed ?? 0} passed, ${run.failed ?? 0} failed). Fix the failing tests or the code they cover. Output:\n\n${run.output ?? "(no output captured)"}`;
+  const detail = describeSummary({ passed: run.passed, failed: run.failed });
+  const lead =
+    run.passed === null && run.failed === null
+      ? `The E2E Test Run failed before any test ran (exit code ${run.exitCode ?? "n/a"}; ${detail}). Read the output below: it is usually a config, dependency or web-server problem rather than a failing assertion.`
+      : `The E2E Test Run failed (exit code ${run.exitCode ?? "n/a"}; ${detail}). Fix the failing tests or the code they cover.`;
+  return `${lead} Output:\n\n${run.output ?? "(no output captured)"}`;
 }
 
 // --- Forced video -----------------------------------------------------------
 
-const OVERLAY_PATH = "/tmp/sdlc-pw.config.ts";
+const OVERLAY_BASENAME = "sdlc-pw.config.ts";
 
 export function isPlaywrightCommand(command: string): boolean {
   return /playwright|test:e2e/i.test(command);
+}
+
+// `npm run <script> --config X` makes npm claim `--config` as its own option and
+// forward only the bare path, which Playwright then reads as a test-file filter
+// ("No tests found"). Package-manager run wrappers need the `--` separator;
+// direct invocations (`npx playwright test`, `yarn e2e`) must not get one,
+// since they would pass it straight through to the underlying binary.
+const NEEDS_ARG_SEPARATOR = /(^|[;&|]\s*)(npm|pnpm)\s/;
+
+export function appendCliArg(command: string, arg: string): string {
+  if (/(^|\s)--(\s|$)/.test(command)) return `${command} ${arg}`;
+  return NEEDS_ARG_SEPARATOR.test(command) ? `${command} -- ${arg}` : `${command} ${arg}`;
 }
 
 // Appends the conventional Playwright output dir for this run only when the
@@ -197,16 +228,24 @@ export function withVideoDir(e2e: E2eConfig, videoDir: string | null): string[] 
   return covered ? e2e.artifacts : [...e2e.artifacts, videoDir];
 }
 
+export interface ForcedVideo {
+  command: string;
+  videoDir: string | null;
+  // Removes the overlay from the Workspace; null when no overlay was written.
+  cleanup: (() => Promise<void>) | null;
+}
+
 // Probes for a Playwright config without a video setting and, when found,
 // writes a temporary overlay config extending it with video/screenshot on.
 // Non-Playwright commands or any probe failure → env-only fallback (logged).
-export async function forceVideoOn(
-  sandbox: Sandbox,
-  e2e: E2eConfig,
-  cwd: string,
-  log: (line: string) => void,
-): Promise<{ command: string; videoDir: string | null }> {
-  const fallback = { command: e2e.command, videoDir: videoDirFor(e2e) };
+//
+// The overlay MUST sit beside the config it extends: Playwright resolves
+// `testDir`, `outputDir`, reporter folders and `webServer.cwd` against the
+// directory of the config file it loaded, not against the process cwd. An
+// overlay parked in /tmp silently relocated the whole suite there — the web
+// server started in /tmp (ENOENT package.json) and no test was ever found.
+export async function forceVideoOn(sandbox: Sandbox, e2e: E2eConfig, cwd: string, log: (line: string) => void): Promise<ForcedVideo> {
+  const fallback: ForcedVideo = { command: e2e.command, videoDir: videoDirFor(e2e), cleanup: null };
   if (!isPlaywrightCommand(e2e.command)) {
     log("Non-Playwright e2e command; video forced via env only");
     return fallback;
@@ -221,18 +260,50 @@ export async function forceVideoOn(
     }
     const content = await sandbox.exec(`cat ${configFile}`, { cwd });
     if (/video\s*:/.test(content.stdout)) return fallback;
+
+    const configDir = posixDirname(`${cwd}/${configFile}`);
+    const overlayPath = `${configDir}/${OVERLAY_BASENAME}`;
     const overlay =
       `// Temporary SDLC overlay: extends the project config with video on. Never committed.\n` +
-      `import base from '${cwd}/${configFile}';\n` +
+      `import base from './${posixBasename(configFile)}';\n` +
       `const b = (base as any)?.default ?? base as any;\n` +
       `export default { ...b, use: { ...(b?.use ?? {}), video: 'retain-on-failure', screenshot: 'only-on-failure' } };\n`;
-    await sandbox.writeFile(OVERLAY_PATH, overlay);
-    log(`Forcing Playwright video via overlay config ${OVERLAY_PATH} (extends ${configFile})`);
-    return { command: `${e2e.command} --config ${OVERLAY_PATH}`, videoDir: fallback.videoDir };
+    await sandbox.writeFile(overlayPath, overlay);
+    await excludeFromGit(sandbox, overlayPath);
+    log(`Forcing Playwright video via overlay config ${overlayPath} (extends ${configFile})`);
+    return {
+      command: appendCliArg(e2e.command, `--config ${shellQuoteIfNeeded(overlayPath)}`),
+      videoDir: fallback.videoDir,
+      cleanup: async () => {
+        await sandbox.exec(`rm -f ${shellQuote(overlayPath)}`, {});
+      },
+    };
   } catch (e) {
     log(`Video overlay probe failed; falling back to env injection: ${errorMessage(e)}`);
     return fallback;
   }
+}
+
+// The Workspace is reused across Agent Runs and the Developer stages with
+// `git add -A`, so an untracked overlay would end up in the Task's PR. Git's
+// per-clone exclude file keeps it invisible without touching the repository.
+async function excludeFromGit(sandbox: Sandbox, overlayPath: string): Promise<void> {
+  if (!overlayPath.startsWith(`${WORKSPACE}/`)) return;
+  const relative = overlayPath.slice(WORKSPACE.length + 1);
+  const exclude = ".git/info/exclude";
+  await sandbox.exec(
+    `mkdir -p .git/info && grep -qxF ${shellQuote(relative)} ${exclude} 2>/dev/null || echo ${shellQuote(relative)} >> ${exclude}`,
+    { cwd: WORKSPACE },
+  );
+}
+
+function posixDirname(p: string): string {
+  const idx = p.lastIndexOf("/");
+  return idx <= 0 ? "/" : p.slice(0, idx);
+}
+
+function posixBasename(p: string): string {
+  return p.slice(p.lastIndexOf("/") + 1);
 }
 
 function videoDirFor(e2e: E2eConfig): string | null {
