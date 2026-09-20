@@ -6,11 +6,14 @@ import {
   DEMO_TASK,
   MAX_CONCURRENT_TASKS_ERROR_CODE,
   REVIEWERS,
+  computeChangeScope,
   retryAvailability,
+  scopedReviewers,
   sendBackAvailability,
   type CreateTaskInput,
   type DecideApprovalInput,
   type ResetDemoResult,
+  type Reviewer,
 } from "@sdlc-ai/shared";
 import { developerBody } from "../agents/developer.js";
 import { e2eTestWriterBody } from "../agents/e2e-test-writer.js";
@@ -36,6 +39,7 @@ import {
 import { env } from "../env.js";
 import { HttpError, errorMessage } from "../errors.js";
 import { bus } from "../events/bus.js";
+import { loadManifest } from "../integrations/manifest.js";
 import { TIMEOUTS, type Deps } from "./deps.js";
 import { computeTouchedTargets, isTerminalDeployment, pollDeployments } from "./deployments.js";
 import { e2eFeedback, startTestRun } from "./e2e.js";
@@ -209,15 +213,19 @@ export class WorkflowService {
     return false;
   }
 
-  // Gate: four Reviews recorded. Verdicts are informational.
+  // Gate: Reviews from every required stack reviewer recorded. Only the
+  // stacks the PR touches are required: fe-only diffs need just the
+  // frontend reviewer, be-only just backend, shared/unknown need both.
+  // Verdicts are informational.
   private async agentReview(task: TaskRow): Promise<boolean> {
+    const required = await this.requiredReviewers(task);
     const done = await reviewsSince(task.id, task.stageEnteredAt);
-    if (REVIEWERS.every((r) => done.some((d) => d.reviewer === r))) {
+    if (required.every((r) => done.some((d) => d.reviewer === r))) {
       await transition(task, "HUMAN_REVIEW", "RUNNING");
       return true;
     }
     let started = false;
-    for (const reviewer of REVIEWERS) {
+    for (const reviewer of required) {
       if (done.some((d) => d.reviewer === reviewer)) continue;
       const run = await latestAgentRun(task.id, reviewer, task.stageEnteredAt);
       if (!run) {
@@ -230,6 +238,17 @@ export class WorkflowService {
     }
     if (started) await setStatus(task, "RUNNING", { agent: "REVIEWERS" });
     return false;
+  }
+
+  private async requiredReviewers(task: TaskRow): Promise<Reviewer[]> {
+    try {
+      const project = await getProject();
+      const manifest = await loadManifest(this.deps.github, project.defaultBranch);
+      const changedFiles = task.pullRequestNumber ? await this.deps.github.getChangedFiles(task.pullRequestNumber).catch(() => [] as string[]) : [];
+      return scopedReviewers(computeChangeScope(changedFiles, manifest));
+    } catch {
+      return [...REVIEWERS];
+    }
   }
 
   // Gate: an APPROVED Approval. Only a human can create one, via the REST API.

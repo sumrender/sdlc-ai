@@ -107,13 +107,11 @@ Capture logs/results/screenshots if available.
 
 ### 6. Agent Review
 
-Run 4 reviewers in parallel:
+Run the required stack reviewers in parallel (change-scoped from the manifest):
 
 ```text
-Security
-Architecture
-Quality
-Performance
+Frontend (fe-only, shared, or unknown diffs)
+Backend  (be-only, shared, or unknown diffs)
 ```
 
 Each returns:

@@ -36,6 +36,13 @@
       "when": 1789847615502,
       "tag": "0004_shallow_power_pack",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1789900000000,
+      "tag": "0005_stack_reviewers",
+      "breakpoints": true
     }
   ]
 }

@@ -57,6 +57,9 @@ export async function ensureCoverage(deps: Deps, task: TaskRow, llmCheck: LlmCov
   }
   const project = await getProject();
   const manifest = await loadManifest(deps.github, project.defaultBranch);
+  if (!manifest.e2e) {
+    return { covered: true, rationale: "No e2e suite configured in the manifest; coverage not required." };
+  }
   const changedFiles = task.pullRequestNumber ? await deps.github.getChangedFiles(task.pullRequestNumber) : [];
   const { covered, specFiles } = heuristicCovered(changedFiles, manifest.e2e.cwd);
 

@@ -101,24 +101,20 @@ const AGENT_SCRIPT: Record<Agent, string[]> = {
     "Committing and pushing as sdlc-ai[bot]",
     "Opened PR",
   ],
-  REVIEWER_SECURITY: ["Cloning at task branch", "[tool] read fe/src/components/GalleryHeader.tsx", "Checking for unsanitised rendering", "Verdict: REJECT"],
-  REVIEWER_ARCHITECTURE: ["Cloning at task branch", "[tool] read fe/src/components/GalleryHeader.tsx", "Verdict: PASS"],
-  REVIEWER_QUALITY: ["Cloning at task branch", "[tool] read fe/e2e/gallery.spec.ts", "Verdict: PASS"],
-  REVIEWER_PERFORMANCE: ["Cloning at task branch", "Measuring gallery render", "Verdict: PASS"],
+  REVIEWER_FRONTEND: ["Cloning at task branch", "[tool] read fe/src/components/GalleryHeader.tsx", "Checking for unsanitised rendering", "Verdict: REJECT"],
+  REVIEWER_BACKEND: ["Cloning at task branch", "[tool] read be/Controllers/TemplatesController.cs", "Verdict: PASS"],
   E2E_TEST_WRITER: ["Cloning at task branch", "[tool] edit fe/e2e/generated-coverage.spec.ts", "Committing and pushing as sdlc-ai[bot]", "E2E spec ready"],
 };
 
 const REVIEW_OUTPUT: Record<Reviewer, { verdict: Verdict; findings: Finding[] }> = {
-  REVIEWER_SECURITY: {
+  REVIEWER_FRONTEND: {
     verdict: "REJECT",
     findings: [
       { severity: "HIGH", message: "templates.length is rendered without a null guard; a failed fetch renders a crash", file: "fe/src/components/GalleryHeader.tsx", line: 6 },
       { severity: "MEDIUM", message: "Count text is interpolated into the heading without escaping; safe today, fragile if the label becomes user-supplied", file: "fe/src/components/GalleryHeader.tsx", line: 8 },
     ],
   },
-  REVIEWER_ARCHITECTURE: { verdict: "PASS", findings: [{ severity: "INFO", message: "Count derived in the component; fine at this size", file: "fe/src/components/GalleryHeader.tsx" }] },
-  REVIEWER_QUALITY: { verdict: "PASS", findings: [{ severity: "LOW", message: "Consider extracting the count label for i18n", file: "fe/src/components/GalleryHeader.tsx", line: 6 }] },
-  REVIEWER_PERFORMANCE: { verdict: "PASS", findings: [] },
+  REVIEWER_BACKEND: { verdict: "PASS", findings: [{ severity: "INFO", message: "No backend paths touched in this change", file: "be/Controllers/TemplatesController.cs" }] },
 };
 
 const FIXTURE_SETTINGS: ProjectSettings = {
@@ -140,9 +136,26 @@ const FIXTURE_SETTINGS: ProjectSettings = {
   manifest: {
     ok: true,
     manifest: {
-      setup: ["npm ci", "npm ci --prefix fe"],
-      checks: ["npm run lint", "npm run build --prefix fe"],
-      e2e: { command: "npm run test:e2e", cwd: "fe", env: { CI: "1", BASE_URL: "http://localhost:5173" }, artifacts: ["fe/playwright-report", "fe/test-results"] },
+      version: 2,
+      setup: ["npm ci"],
+      checks: ["npm run lint"],
+      frontend: {
+        dir: "fe",
+        paths: ["fe/**"],
+        setup: ["npm ci --prefix fe"],
+        checks: ["npm run build --prefix fe"],
+        unitTests: { command: "npx ng test --watch=false --browsers=ChromeHeadless", cwd: "fe", env: {}, optional: true },
+        integrations: [{ name: "Playwright E2E", notes: "npm run test:e2e in fe; E2E_START_SERVER boots ng serve" }],
+      },
+      backend: {
+        dir: "be",
+        paths: ["be/**"],
+        setup: ["dotnet restore be/Backend.csproj"],
+        checks: ["dotnet build be/Backend.csproj --no-restore"],
+        unitTests: { command: "dotnet test be/Tests/Backend.Tests.csproj --no-build", cwd: ".", env: {}, optional: true },
+        integrations: [{ name: "PostgreSQL 15 + EF Core", notes: "Code-first migrations; connection via be/.env" }],
+      },
+      e2e: { command: "npm run test:e2e", cwd: "fe", env: { CI: "1", BASE_URL: "http://localhost:5173" }, artifacts: ["fe/playwright-report", "fe/test-results"], optional: false },
     },
   },
   deployProviders: { CLOUDFLARE: true, RENDER: false },
@@ -382,7 +395,7 @@ export function createFixtureApi(): FixtureApi {
     emit(taskId, "APPROVAL_REQUESTED", { approvalId: approval.id });
   };
 
-  /** From the end of a Developer run: open the PR, run E2E, run the four Reviewers, then ask for an Approval. */
+  /** From the end of a Developer run: open the PR, run E2E, run the stack Reviewers, then ask for an Approval. */
   const testAndReview = (taskId: string) =>
     sequence([
       () => {
@@ -392,11 +405,9 @@ export function createFixtureApi(): FixtureApi {
       },
       () => {
         moveTo(taskId, "AGENT_REVIEW", "RUNNING");
-        runAgent(taskId, "REVIEWER_SECURITY");
+        runAgent(taskId, "REVIEWER_FRONTEND");
       },
-      () => runAgent(taskId, "REVIEWER_ARCHITECTURE"),
-      () => runAgent(taskId, "REVIEWER_QUALITY"),
-      () => runAgent(taskId, "REVIEWER_PERFORMANCE"),
+      () => runAgent(taskId, "REVIEWER_BACKEND"),
       () => undefined,
       () => requestApproval(taskId),
     ]);

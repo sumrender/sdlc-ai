@@ -1,4 +1,4 @@
-import type { ProjectManifest } from "@sdlc-ai/shared";
+import { computeChangeScope, scopedChecks, scopedUnitTests, type ProjectManifest } from "@sdlc-ai/shared";
 import type { TaskRow } from "../db/schema.js";
 import { env } from "../env.js";
 import { AgentOutputError, TimeoutError } from "../errors.js";
@@ -7,6 +7,7 @@ import { loadManifest } from "../integrations/manifest.js";
 import { TIMEOUTS } from "../pipeline/deps.js";
 import { tail, updateTask } from "../pipeline/tasks.js";
 import { WORKSPACE } from "../sandbox/docker.js";
+import { shellQuote } from "../sandbox/process.js";
 import { commitAndPush, prepareWorkspace, prepareWorkspaceReuse } from "../sandbox/workspace.js";
 import { AGENT_DEFINITIONS } from "./definitions.js";
 import { invokeAgent, type AgentBody, type RunContext } from "./runner.js";
@@ -71,23 +72,55 @@ export const developerBody: AgentBody = async (ctx) => {
   }
 };
 
+interface CheckCommand {
+  command: string;
+  cwd?: string;
+  env?: Record<string, string>;
+}
+
 async function runChecks(ctx: RunContext, manifest: ProjectManifest): Promise<{ command: string; output: string } | null> {
-  const { sandbox, log, task } = ctx;
-  await bus.emit(task.id, "CHECKS_STARTED", { commands: manifest.checks });
+  const { sandbox, log, task, project } = ctx;
+  // Scope checks to the stacks the branch actually touches: fe-only changes
+  // skip backend checks (and vice versa). Unknown or shared diffs run all.
+  const changedFiles = await changedFilesInWorkspace(ctx).catch(() => [] as string[]);
+  const scope = computeChangeScope(changedFiles, manifest);
+  const scopeLabel = scope.shared ? "both stacks (shared changes)" : [scope.frontend && "frontend", scope.backend && "backend"].filter(Boolean).join(" + ");
+  log(`Change scope: ${scopeLabel} (${changedFiles.length} changed file(s))`);
+
+  const commands: CheckCommand[] = [
+    ...scopedChecks(manifest, scope).map((command) => ({ command })),
+    ...scopedUnitTests(manifest, scope).map((u) => ({ command: u.command, cwd: u.cwd, env: u.env })),
+  ];
+  await bus.emit(task.id, "CHECKS_STARTED", { commands: commands.map((c) => c.command), scope: scopeLabel });
   const deadline = Date.now() + TIMEOUTS.CHECKS;
-  for (const command of manifest.checks) {
+  for (const { command, cwd, env } of commands) {
     log(`$ ${command}`);
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new TimeoutError("Checks timed out after 10 minutes");
-    const result = await sandbox.exec(command, { cwd: WORKSPACE, timeoutMs: remaining, onLine: log });
+    const result = await sandbox.exec(command, { cwd: cwd && cwd !== "." ? `${WORKSPACE}/${cwd}` : WORKSPACE, env, timeoutMs: remaining, onLine: log });
     if (result.timedOut) throw new TimeoutError("Checks timed out after 10 minutes");
     if (result.exitCode !== 0) {
       await bus.emit(task.id, "CHECKS_COMPLETED", { ok: false, command, exitCode: result.exitCode });
       return { command, output: tail(`${result.stdout}\n${result.stderr}`, 8000) };
     }
   }
-  await bus.emit(task.id, "CHECKS_COMPLETED", { ok: true, commands: manifest.checks });
+  await bus.emit(task.id, "CHECKS_COMPLETED", { ok: true, commands: commands.map((c) => c.command) });
   return null;
+}
+
+/** Files changed on the task branch vs the default branch, plus untracked files. Empty on any error (caller runs everything). */
+async function changedFilesInWorkspace(ctx: RunContext): Promise<string[]> {
+  const { sandbox, project } = ctx;
+  const base = `origin/${project.defaultBranch}`;
+  const out = new Set<string>();
+  const diff = await sandbox.exec(`git diff --name-only ${shellQuote(base)}...HEAD; git diff --name-only`, { cwd: WORKSPACE });
+  for (const line of diff.stdout.split("\n").map((s) => s.trim())) if (line) out.add(line);
+  const status = await sandbox.exec(`git status --porcelain`, { cwd: WORKSPACE });
+  for (const line of status.stdout.split("\n")) {
+    const m = line.match(/^\?\?\s+(.+)$/);
+    if (m?.[1]) out.add(m[1].trim().replace(/^"(.*)"$/, "$1"));
+  }
+  return [...out];
 }
 
 function developerPrompt(task: TaskRow, manifest: ProjectManifest): string {
@@ -99,7 +132,12 @@ The previous attempt was rejected. Address every point below in addition to the 
 ${task.pendingFeedback}
 `
     : "";
-  const checks = manifest.checks.length ? manifest.checks.map((c) => `- \`${c}\``).join("\n") : "- (none)";
+  const all: string[] = [
+    ...manifest.checks,
+    ...(manifest.frontend ? [...manifest.frontend.checks, ...(manifest.frontend.unitTests ? [manifest.frontend.unitTests.command] : [])] : []),
+    ...(manifest.backend ? [...manifest.backend.checks, ...(manifest.backend.unitTests ? [manifest.backend.unitTests.command] : [])] : []),
+  ];
+  const checks = all.length ? all.map((c) => `- \`${c}\``).join("\n") : "- (none)";
   return `# Task
 Title: ${task.title}
 
@@ -109,13 +147,16 @@ ${task.description || "(no description)"}
 ${task.plan ?? "(no plan recorded)"}
 ${feedback}
 # Checks
-The control plane will run these commands after you finish; all of them must exit 0:
+The control plane will run the Checks for the stacks your branch touches after you finish; all of them must exit 0.
+Changes touching only frontend paths skip backend checks, and vice versa. Shared files run everything.
+The full set across both stacks:
+
 ${checks}
 
 # Rules
 - Follow the Plan. You may change both frontend and backend code.
 - Do not commit, push, or touch git configuration or anything under .opencode/.
-- Run the Checks yourself before finishing and fix any failure.
+- Run the Checks for your touched stacks yourself before finishing and fix any failure.
 - Finish with a short prose summary of what you changed.`;
 }
 

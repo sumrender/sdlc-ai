@@ -23,12 +23,7 @@ export const TASK_STATUSES = ["READY", "RUNNING", "WAITING", "FAILED", "COMPLETE
 export const TaskStatusSchema = z.enum(TASK_STATUSES);
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 
-export const REVIEWERS = [
-  "REVIEWER_SECURITY",
-  "REVIEWER_ARCHITECTURE",
-  "REVIEWER_QUALITY",
-  "REVIEWER_PERFORMANCE",
-] as const;
+export const REVIEWERS = ["REVIEWER_FRONTEND", "REVIEWER_BACKEND"] as const;
 export const ReviewerSchema = z.enum(REVIEWERS);
 export type Reviewer = z.infer<typeof ReviewerSchema>;
 

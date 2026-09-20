@@ -1,4 +1,5 @@
 import type { Agent, ProjectManifest } from "@sdlc-ai/shared";
+import { fullSetup } from "@sdlc-ai/shared";
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
 import { AgentOutputError, SandboxError, TimeoutError, WorkspaceError } from "../errors.js";
 import { TIMEOUTS } from "../pipeline/deps.js";
@@ -34,7 +35,7 @@ export async function prepareWorkspace(sandbox: Sandbox, github: GitHubService, 
     if (checkout.exitCode !== 0) throw new WorkspaceError(`git checkout -b failed: ${checkout.stderr.trim()}`);
   }
 
-  for (const command of options.manifest.setup) {
+  for (const command of fullSetup(options.manifest)) {
     options.log(`$ ${command}`);
     const result = await sandbox.exec(command, { cwd: WORKSPACE, timeoutMs: TIMEOUTS.WORKSPACE, onLine: options.log });
     if (result.timedOut) throw new WorkspaceError(`setup command timed out: ${command}`);
@@ -50,6 +51,8 @@ export async function prepareWorkspace(sandbox: Sandbox, github: GitHubService, 
 // Reuse path for `reuseSandbox`: keep the container, switch refs, skip setup
 // when the manifest hash matches. Always rewrites the current agent files and
 // resets to a clean git state (auto-reset + continue) before handing over.
+// Setup is never scoped to a stack: workspaces prepare before the change set
+// is known, and the Developer may touch both stacks.
 export async function prepareWorkspaceReuse(sandbox: Sandbox, github: GitHubService, options: WorkspaceOptions): Promise<void> {
   const probe = await sandbox.exec(`test -d ${WORKSPACE}/.git && echo SDLC_HAS_GIT || echo SDLC_NO_GIT`, {});
   if (!probe.stdout.includes("SDLC_HAS_GIT")) {
@@ -92,7 +95,7 @@ export async function prepareWorkspaceReuse(sandbox: Sandbox, github: GitHubServ
   if (await isSetupFresh(sandbox, options.manifest)) {
     options.log("Setup skipped (cached for this container)");
   } else {
-    for (const command of options.manifest.setup) {
+    for (const command of fullSetup(options.manifest)) {
       options.log(`$ ${command}`);
       const result = await sandbox.exec(command, { cwd: WORKSPACE, timeoutMs: TIMEOUTS.WORKSPACE, onLine: options.log });
       if (result.timedOut) throw new WorkspaceError(`setup command timed out: ${command}`);
@@ -109,7 +112,7 @@ export async function prepareWorkspaceReuse(sandbox: Sandbox, github: GitHubServ
 }
 
 function setupHash(manifest: ProjectManifest): string {
-  return JSON.stringify(manifest.setup ?? []);
+  return JSON.stringify(fullSetup(manifest));
 }
 
 async function isSetupFresh(sandbox: Sandbox, manifest: ProjectManifest): Promise<boolean> {

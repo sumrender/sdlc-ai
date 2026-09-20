@@ -6,8 +6,25 @@ import type { DeployLookup, DeployProvider, ExecOptions, ExecResult, GitHubServi
 
 const FAKE_MANIFEST = JSON.stringify(
   {
-    setup: ["npm ci", "npm ci --prefix fe"],
-    checks: ["npm run build --prefix fe"],
+    version: 2,
+    setup: ["npm ci"],
+    checks: [],
+    frontend: {
+      dir: "fe",
+      paths: ["fe/**"],
+      setup: ["npm ci --prefix fe"],
+      checks: ["npm run build --prefix fe"],
+      unitTests: { command: "npx ng test --watch=false --browsers=ChromeHeadless", cwd: "fe", optional: true },
+      integrations: [{ name: "Playwright E2E", notes: "npm run test:e2e in fe; E2E_START_SERVER boots ng serve" }],
+    },
+    backend: {
+      dir: "be",
+      paths: ["be/**"],
+      setup: [],
+      checks: [],
+      unitTests: null,
+      integrations: [],
+    },
     e2e: { command: "npm run test:e2e", cwd: "fe", env: { E2E_START_SERVER: "true" }, artifacts: ["fe/playwright-report", "fe/test-results"] },
   },
   null,
@@ -172,8 +189,10 @@ class FakeSandbox implements Sandbox {
       text = "Implemented the template count in fe/src/components/GalleryHeader.tsx and added an E2E assertion in fe/e2e/gallery.spec.ts. Build passes.";
     } else if (agent.includes("e2e-test-writer")) {
       text = "Wrote a focused spec for the template count header.\n\nSPEC_PATH: fe/e2e/generated-coverage.spec.ts";
-    } else if (agent.includes("security")) {
+    } else if (agent.includes("frontend")) {
       text = 'Reviewed.\n\n```json\n{ "verdict": "REJECT", "findings": [ { "severity": "HIGH", "message": "templates.length is rendered without a null guard; a failed fetch renders a crash", "file": "fe/src/components/GalleryHeader.tsx", "line": 6 } ] }\n```';
+    } else if (agent.includes("backend")) {
+      text = 'Reviewed.\n\n```json\n{ "verdict": "PASS", "findings": [ { "severity": "LOW", "message": "No backend paths touched; nothing to flag", "file": "be/Controllers/TemplatesController.cs" } ] }\n```';
     } else {
       text = 'Reviewed.\n\n```json\n{ "verdict": "PASS", "findings": [ { "severity": "LOW", "message": "Consider extracting the count label for i18n", "file": "fe/src/components/GalleryHeader.tsx", "line": 6 } ] }\n```';
     }

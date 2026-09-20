@@ -19,6 +19,10 @@ export const e2eTestWriterBody: AgentBody = async (ctx) => {
   if (!branch) throw new AgentOutputError("Task has no branch name");
 
   const manifest = await loadManifest(deps.github, project.defaultBranch);
+  if (!manifest.e2e) {
+    log("No e2e suite configured in the manifest; skipping spec writer");
+    return;
+  }
   if ((project as { reuseSandbox?: boolean }).reuseSandbox) {
     await prepareWorkspaceReuse(sandbox, deps.github, { ref: branch, manifest, agents: ["E2E_TEST_WRITER"], log });
   } else {

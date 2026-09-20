@@ -215,36 +215,103 @@ function SettingsView({ settings }: { settings: ProjectSettings }) {
 }
 
 function ManifestView({ manifest }: { manifest: Extract<ProjectSettings["manifest"], { ok: true }>["manifest"] }) {
-  const env = Object.entries(manifest.e2e.env);
   return (
-    <div className="grid gap-4 md:grid-cols-3">
-      <CommandList title="Setup" commands={manifest.setup} empty="No setup commands. The Workspace is used as cloned." />
-      <CommandList title="Checks" commands={manifest.checks} empty="No Checks. Nothing runs before commit." />
+    <div className="flex flex-col gap-4">
+      <div className="grid gap-4 md:grid-cols-3">
+        <CommandList title="Shared setup" commands={manifest.setup} empty="No shared setup commands." />
+        <CommandList title="Shared checks (always run)" commands={manifest.checks} empty="No shared checks." />
+        <E2EView e2e={manifest.e2e} />
+      </div>
+      <div className="grid gap-4 md:grid-cols-2">
+        {manifest.frontend && <StackView title="Frontend" stack={manifest.frontend} />}
+        {manifest.backend && <StackView title="Backend" stack={manifest.backend} />}
+        {!manifest.frontend && !manifest.backend && (
+          <p className="text-sm text-muted-foreground">No frontend/backend stacks declared. All checks run for every change.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StackView({ title, stack }: { title: string; stack: NonNullable<Extract<ProjectSettings["manifest"], { ok: true }>["manifest"]["frontend"]> }) {
+  return (
+    <div className="rounded-lg border border-border p-3">
+      <h3 className="text-[13px] font-semibold">
+        {title} <span className="ml-1 font-mono text-[11px] font-normal text-muted-foreground">{stack.dir}</span>
+      </h3>
+      <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">paths: {stack.paths.length > 0 ? stack.paths.join(", ") : `${stack.dir}/**`}</p>
+      <div className="mt-2 grid gap-3">
+        <CommandList title="Setup" commands={stack.setup} empty="No setup commands." />
+        <CommandList title="Checks (run when this stack changes)" commands={stack.checks} empty="No checks." />
+        <div>
+          <h4 className="text-[11px] font-medium text-muted-foreground">Unit tests</h4>
+          {stack.unitTests ? (
+            <div className="mt-1 font-mono text-xs">
+              <div>$ {stack.unitTests.command}</div>
+              <div className="text-muted-foreground">
+                cwd: {stack.unitTests.cwd}
+                {stack.unitTests.optional ? " · optional" : ""}
+              </div>
+            </div>
+          ) : (
+            <p className="mt-1 text-xs text-muted-foreground">Not configured.</p>
+          )}
+        </div>
+        <div>
+          <h4 className="text-[11px] font-medium text-muted-foreground">Integrations</h4>
+          {stack.integrations.length === 0 ? (
+            <p className="mt-1 text-xs text-muted-foreground">None declared.</p>
+          ) : (
+            <ul className="mt-1 flex flex-col gap-1.5">
+              {stack.integrations.map((i) => (
+                <li key={i.name} className="text-xs">
+                  <span className="font-medium">{i.name}</span>
+                  {i.notes && <span className="text-muted-foreground"> — {i.notes}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function E2EView({ e2e }: { e2e: Extract<ProjectSettings["manifest"], { ok: true }>["manifest"]["e2e"] }) {
+  if (!e2e) {
+    return (
       <div>
         <h3 className="text-[11px] font-medium text-muted-foreground">End-to-end tests</h3>
-        <dl className="mt-2 flex flex-col gap-1.5 text-sm">
-          <div>
-            <dt className="text-xs text-muted-foreground">Command</dt>
-            <dd className="font-mono text-xs">{manifest.e2e.command}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-muted-foreground">Working directory</dt>
-            <dd className="font-mono text-xs">{manifest.e2e.cwd}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-muted-foreground">Environment</dt>
-            <dd className="font-mono text-xs">
-              {env.length === 0 ? <span className="font-sans text-muted-foreground">None</span> : env.map(([k, v]) => <div key={k}>{`${k}=${v}`}</div>)}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-xs text-muted-foreground">Artifacts copied out</dt>
-            <dd className="font-mono text-xs">
-              {manifest.e2e.artifacts.length === 0 ? <span className="font-sans text-muted-foreground">None</span> : manifest.e2e.artifacts.map((a) => <div key={a}>{a}</div>)}
-            </dd>
-          </div>
-        </dl>
+        <p className="mt-2 text-xs text-muted-foreground">Not configured. The E2E gate passes without running.</p>
       </div>
+    );
+  }
+  const env = Object.entries(e2e.env);
+  return (
+    <div>
+      <h3 className="text-[11px] font-medium text-muted-foreground">End-to-end tests</h3>
+      <dl className="mt-2 flex flex-col gap-1.5 text-sm">
+        <div>
+          <dt className="text-xs text-muted-foreground">Command</dt>
+          <dd className="font-mono text-xs">{e2e.command}</dd>
+        </div>
+        <div>
+          <dt className="text-xs text-muted-foreground">Working directory</dt>
+          <dd className="font-mono text-xs">{e2e.cwd}</dd>
+        </div>
+        <div>
+          <dt className="text-xs text-muted-foreground">Environment</dt>
+          <dd className="font-mono text-xs">
+            {env.length === 0 ? <span className="font-sans text-muted-foreground">None</span> : env.map(([k, v]) => <div key={k}>{`${k}=${v}`}</div>)}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-xs text-muted-foreground">Artifacts copied out</dt>
+          <dd className="font-mono text-xs">
+            {e2e.artifacts.length === 0 ? <span className="font-sans text-muted-foreground">None</span> : e2e.artifacts.map((a) => <div key={a}>{a}</div>)}
+          </dd>
+        </div>
+      </dl>
     </div>
   );
 }

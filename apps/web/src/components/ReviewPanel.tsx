@@ -1,21 +1,17 @@
-import { Boxes, Gauge, Loader2, ShieldCheck, Sparkles, type LucideIcon } from "lucide-react";
+import { AppWindow, Loader2, Server, type LucideIcon } from "lucide-react";
 import { REVIEWERS, SEVERITIES, type AgentRun, type Finding, type Review, type Reviewer, type Severity } from "@sdlc-ai/shared";
 import { Badge } from "~/components/ui/badge";
 import { formatTime } from "~/lib/task-detail";
 import { cn } from "~/lib/utils";
 
 export const REVIEWER_LABEL: Record<Reviewer, string> = {
-  REVIEWER_SECURITY: "Security",
-  REVIEWER_ARCHITECTURE: "Architecture",
-  REVIEWER_QUALITY: "Quality",
-  REVIEWER_PERFORMANCE: "Performance",
+  REVIEWER_FRONTEND: "Frontend",
+  REVIEWER_BACKEND: "Backend",
 };
 
 const REVIEWER_ICON: Record<Reviewer, LucideIcon> = {
-  REVIEWER_SECURITY: ShieldCheck,
-  REVIEWER_ARCHITECTURE: Boxes,
-  REVIEWER_QUALITY: Sparkles,
-  REVIEWER_PERFORMANCE: Gauge,
+  REVIEWER_FRONTEND: AppWindow,
+  REVIEWER_BACKEND: Server,
 };
 
 const SEVERITY_CLASS: Record<Severity, string> = {

@@ -1,6 +1,40 @@
 {
-  "project": "sumrender/meme",
-  "frontend": { "dir": "fe", "port": 3000 },
-  "backend": { "dir": "be", "port": 4000 },
-  "e2e": { "artifacts": ["fe/playwright-report", "fe/test-results"] }
+  "version": 2,
+  "setup": ["pnpm install"],
+  "checks": ["pnpm -r typecheck"],
+  "frontend": {
+    "dir": "apps/web",
+    "paths": ["apps/web/**"],
+    "setup": [],
+    "checks": ["pnpm --filter @sdlc-ai/web build"],
+    "unitTests": null,
+    "integrations": [
+      {
+        "name": "Control-plane UI",
+        "notes": "Vite + React + TanStack Router/Query board, task detail, settings and fixture-mode pages served from apps/web."
+      }
+    ]
+  },
+  "backend": {
+    "dir": "apps/api",
+    "paths": ["apps/api/**"],
+    "setup": [],
+    "checks": ["pnpm --filter @sdlc-ai/api build"],
+    "unitTests": null,
+    "integrations": [
+      {
+        "name": "PostgreSQL + Drizzle",
+        "notes": "Hono API with Drizzle ORM; migrations in apps/api/drizzle, seed via pnpm --filter @sdlc-ai/api db:seed."
+      },
+      {
+        "name": "GitHub (Octokit)",
+        "notes": "Issues, branches, PRs, merges and manifest reads through the GitHub service."
+      },
+      {
+        "name": "Docker sandbox + OpenCode Zen",
+        "notes": "Task containers built by sandbox/build.mjs; agents run inside via OpenCode. Deploy polling via CLOUDFLARE/RENDER providers."
+      }
+    ]
+  },
+  "e2e": null
 }

@@ -124,36 +124,22 @@ Rules:
 - When done, report the spec path you wrote in plain prose.
 `,
   ),
-  REVIEWER_SECURITY: reviewer(
-    "sdlc-reviewer-security",
-    "Security",
-    `- injection (SQL, command, XSS, template), unsafe deserialization
-- authentication/authorization gaps, secrets or tokens in code or logs
-- unsafe defaults, missing input validation at trust boundaries, SSRF, path traversal
-- dependency or configuration changes that widen the attack surface`,
-  ),
-  REVIEWER_ARCHITECTURE: reviewer(
-    "sdlc-reviewer-architecture",
-    "Architecture",
-    `- does the change follow the existing module boundaries and layering
-- coupling introduced between components that should stay independent
-- duplicated logic that should reuse an existing abstraction
-- API or data-model changes that are hard to evolve or break existing contracts`,
-  ),
-  REVIEWER_QUALITY: reviewer(
-    "sdlc-reviewer-quality",
-    "Quality",
-    `- correctness bugs, unhandled edge cases, off-by-one, null handling
-- readability, naming, dead code, misleading comments
+  REVIEWER_FRONTEND: reviewer(
+    "sdlc-reviewer-frontend",
+    "Frontend",
+    `- correctness of UI behaviour, state handling, routing, and edge cases in the frontend stack
+- component structure, readability, naming, dead code, and consistency with the repo's frontend conventions
 - test coverage for the changed behaviour and whether tests assert the right things
-- consistency with the repository's conventions and lint rules`,
+- performance pitfalls: unnecessary re-renders, repeated network calls, large payloads, blocking work on the render path
+- security at the UI boundary: XSS via unescaped rendering, secrets or tokens in client code, auth bypass in route guards`,
   ),
-  REVIEWER_PERFORMANCE: reviewer(
-    "sdlc-reviewer-performance",
-    "Performance",
-    `- unnecessary re-renders, repeated network calls, N+1 queries
-- work done on the hot path that could be memoized, batched, or moved
-- large payloads, unbounded lists, missing pagination or caching
-- blocking operations, memory growth, and regressions in startup or load time`,
+  REVIEWER_BACKEND: reviewer(
+    "sdlc-reviewer-backend",
+    "Backend",
+    `- correctness of API behaviour, data handling, migrations, and edge cases in the backend stack
+- layering and module boundaries: controllers, services, data access, and whether the change respects them
+- auth/authz gaps, input validation at trust boundaries, injection, secrets in code or logs, unsafe defaults
+- performance pitfalls: N+1 queries, unbounded lists, missing pagination or caching, blocking operations
+- API or data-model changes that are hard to evolve or break existing contracts`,
   ),
 };

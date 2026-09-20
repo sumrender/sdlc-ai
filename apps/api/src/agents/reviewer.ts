@@ -17,10 +17,8 @@ const REASK_PROMPT =
   '{ "verdict": "PASS" | "REJECT", "findings": [ { "severity": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO", "message": string, "file"?: string, "line"?: number } ] } and nothing else.';
 
 const FOCUS: Record<Reviewer, string> = {
-  REVIEWER_SECURITY: "security",
-  REVIEWER_ARCHITECTURE: "architecture",
-  REVIEWER_QUALITY: "quality",
-  REVIEWER_PERFORMANCE: "performance",
+  REVIEWER_FRONTEND: "frontend",
+  REVIEWER_BACKEND: "backend",
 };
 
 export const reviewerBody =
@@ -36,7 +34,7 @@ export const reviewerBody =
     } else {
       await prepareWorkspace(sandbox, deps.github, { ref: task.branchName, manifest, agents: [reviewer], log });
     }
-    // Isolated OpenCode data dir so 4 parallel reviewer sessions in one
+    // Isolated OpenCode data dir so parallel reviewer sessions in one
     // container don't contend on the same SQLite store. Fresh session always.
     const dataDir = reuse ? `/tmp/opencode-${reviewer.toLowerCase()}` : null;
 

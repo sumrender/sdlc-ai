@@ -21,13 +21,11 @@ const PLAN = `1. In fe/src/components/GalleryHeader.tsx render "{templates.lengt
 4. Run npm run build --prefix fe and npm run test:e2e.`;
 
 const FINDINGS: Record<(typeof REVIEWERS)[number], { verdict: Verdict; findings: Finding[] }> = {
-  REVIEWER_SECURITY: {
+  REVIEWER_FRONTEND: {
     verdict: "REJECT",
     findings: [{ severity: "HIGH", message: "templates.length is rendered without a null guard; a failed fetch renders a crash", file: "fe/src/components/GalleryHeader.tsx", line: 6 }],
   },
-  REVIEWER_ARCHITECTURE: { verdict: "PASS", findings: [{ severity: "INFO", message: "Count derived in the component; fine at this size", file: "fe/src/components/GalleryHeader.tsx" }] },
-  REVIEWER_QUALITY: { verdict: "PASS", findings: [{ severity: "LOW", message: "Consider extracting the count label for i18n", file: "fe/src/components/GalleryHeader.tsx", line: 6 }] },
-  REVIEWER_PERFORMANCE: { verdict: "PASS", findings: [] },
+  REVIEWER_BACKEND: { verdict: "PASS", findings: [{ severity: "INFO", message: "No backend paths touched in this change", file: "be/Controllers/TemplatesController.cs" }] },
 };
 
 async function main() {
@@ -233,10 +231,8 @@ async function main() {
     await stageChange(t, "DEVELOPMENT", "E2E", 19);
     await testRun(t, true, 18);
     await stageChange(t, "E2E", "AGENT_REVIEW", 6);
-    await review(t, "REVIEWER_ARCHITECTURE", 5);
-    await review(t, "REVIEWER_QUALITY", 5);
-    await run(t, "REVIEWER_SECURITY", "RUNNING", 5, 0, ["Starting REVIEWER_SECURITY", "Cloning at task branch", "[tool] read fe/src/components/GalleryGrid.tsx"]);
-    await run(t, "REVIEWER_PERFORMANCE", "RUNNING", 5, 0, ["Starting REVIEWER_PERFORMANCE", "Cloning at task branch"]);
+    await review(t, "REVIEWER_FRONTEND", 5);
+    await run(t, "REVIEWER_BACKEND", "RUNNING", 5, 0, ["Starting REVIEWER_BACKEND", "Cloning at task branch", "[tool] read be/Controllers/TemplatesController.cs"]);
   }
 
   // HUMAN_REVIEW / WAITING on an Approval

@@ -6,7 +6,7 @@ import { testRuns, type TestRunRow } from "../db/schema.js";
 import { AgentOutputError, SandboxError, TimeoutError, errorMessage } from "../errors.js";
 import { bus } from "../events/bus.js";
 import { loadManifest } from "../integrations/manifest.js";
-import type { ProjectManifest } from "@sdlc-ai/shared";
+import type { E2eConfig } from "@sdlc-ai/shared";
 import type { Sandbox } from "../ports.js";
 import { WORKSPACE } from "../sandbox/docker.js";
 import { prepareWorkspace, prepareWorkspaceReuse } from "../sandbox/workspace.js";
@@ -46,57 +46,68 @@ async function execute(deps: Deps, run: TestRunRow): Promise<void> {
     if (!task.branchName) throw new AgentOutputError("Task has no branch name");
     const project = await getProject();
     const manifest = await loadManifest(deps.github, project.defaultBranch);
-    await db.update(testRuns).set({ command: manifest.e2e.command }).where(eq(testRuns.id, run.id));
-
-    sandbox = null;
-    const pool = deps.sandboxes instanceof TaskSandboxPool ? deps.sandboxes : null;
-    const reuse = Boolean(pool && (project as { reuseSandbox?: boolean }).reuseSandbox);
-    if (reuse && pool) {
-      sandbox = await pool.acquire(task.id);
-      log(`Reusing container ${sandbox.name} for Test Run`);
-      await prepareWorkspaceReuse(sandbox, deps.github, { ref: task.branchName, manifest, agents: [], log });
+    if (!manifest.e2e) {
+      // Project has no e2e suite (optional): record a passing no-op run.
+      exitCode = 0;
+      durationMs = 0;
+      output = "No e2e suite configured in the manifest; skipped.";
+      summary = { passed: 0, failed: 0, skipped: 0 };
+      log(output);
+      await db.update(testRuns).set({ command: "(skipped: no e2e configured)" }).where(eq(testRuns.id, run.id));
     } else {
-      sandbox = await deps.sandboxes.create({ name: `sdlc-e2e-${run.id.slice(0, 8)}-a${run.attempt}` });
-      await prepareWorkspace(sandbox, deps.github, { ref: task.branchName, manifest, agents: [], log });
-    }
+      await db.update(testRuns).set({ command: manifest.e2e.command }).where(eq(testRuns.id, run.id));
 
-    const cwd = manifest.e2e.cwd === "." ? WORKSPACE : `${WORKSPACE}/${manifest.e2e.cwd}`;
-    const forced = await forceVideoOn(sandbox, manifest, cwd, log);
-    const command = forced.command;
-    const env = { ...manifest.e2e.env, PLAYWRIGHT_VIDEO: "on" };
-    log(`$ ${command}  (cwd ${cwd})`);
-    const started = Date.now();
-    const result = await sandbox.exec(command, {
-      cwd,
-      env,
-      timeoutMs: TIMEOUTS.TEST_RUN,
-      onLine: log,
-    });
-    durationMs = Date.now() - started;
-    if (result.timedOut) throw new TimeoutError("Test Run timed out after 10 minutes");
-
-    exitCode = result.exitCode;
-    const combined = `${result.stdout}\n${result.stderr}`;
-    summary = parsePlaywrightSummary(combined);
-    output = tail(combined, 20_000);
-
-    const dest = await deps.artifacts.testRunDir(task.id, run.id);
-    const artifactPaths = withVideoDir(manifest, forced.videoDir);
-    for (const artifactPath of artifactPaths) {
-      const copied = await sandbox.copyOut(`${WORKSPACE}/${artifactPath}`, dest);
-      if (!copied) {
-        log(`No artifacts found at ${artifactPath}`);
-        continue;
+      sandbox = null;
+      const pool = deps.sandboxes instanceof TaskSandboxPool ? deps.sandboxes : null;
+      const reuse = Boolean(pool && (project as { reuseSandbox?: boolean }).reuseSandbox);
+      if (reuse && pool) {
+        sandbox = await pool.acquire(task.id);
+        log(`Reusing container ${sandbox.name} for Test Run`);
+        await prepareWorkspaceReuse(sandbox, deps.github, { ref: task.branchName, manifest, agents: [], log });
+      } else {
+        sandbox = await deps.sandboxes.create({ name: `sdlc-e2e-${run.id.slice(0, 8)}-a${run.attempt}` });
+        await prepareWorkspace(sandbox, deps.github, { ref: task.branchName, manifest, agents: [], log });
       }
-      const count = await deps.artifacts.importDir({
-        taskId: task.id,
-        testRunId: run.id,
-        dir: path.join(dest, path.basename(artifactPath)),
-        prefix: artifactPath,
+
+      const e2e = manifest.e2e;
+      const cwd = e2e.cwd === "." ? WORKSPACE : `${WORKSPACE}/${e2e.cwd}`;
+      const forced = await forceVideoOn(sandbox, e2e, cwd, log);
+      const command = forced.command;
+      const env = { ...e2e.env, PLAYWRIGHT_VIDEO: "on" };
+      log(`$ ${command}  (cwd ${cwd})`);
+      const started = Date.now();
+      const result = await sandbox.exec(command, {
+        cwd,
+        env,
+        timeoutMs: TIMEOUTS.TEST_RUN,
+        onLine: log,
       });
-      log(`Copied ${count} artifact file(s) from ${artifactPath}`);
+      durationMs = Date.now() - started;
+      if (result.timedOut) throw new TimeoutError("Test Run timed out after 10 minutes");
+
+      exitCode = result.exitCode;
+      const combined = `${result.stdout}\n${result.stderr}`;
+      summary = parsePlaywrightSummary(combined);
+      output = tail(combined, 20_000);
+
+      const dest = await deps.artifacts.testRunDir(task.id, run.id);
+      const artifactPaths = withVideoDir(e2e, forced.videoDir);
+      for (const artifactPath of artifactPaths) {
+        const copied = await sandbox.copyOut(`${WORKSPACE}/${artifactPath}`, dest);
+        if (!copied) {
+          log(`No artifacts found at ${artifactPath}`);
+          continue;
+        }
+        const count = await deps.artifacts.importDir({
+          taskId: task.id,
+          testRunId: run.id,
+          dir: path.join(dest, path.basename(artifactPath)),
+          prefix: artifactPath,
+        });
+        log(`Copied ${count} artifact file(s) from ${artifactPath}`);
+      }
+      log(`Test Run finished with exit code ${exitCode}: ${summary.passed ?? 0} passed, ${summary.failed ?? 0} failed`);
     }
-    log(`Test Run finished with exit code ${exitCode}: ${summary.passed ?? 0} passed, ${summary.failed ?? 0} failed`);
   } catch (e) {
     error = errorMessage(e);
     if (e instanceof TimeoutError) {
@@ -177,10 +188,10 @@ export function isPlaywrightCommand(command: string): boolean {
 
 // Appends the conventional Playwright output dir for this run only when the
 // manifest does not already cover it. Never persisted to the manifest.
-export function withVideoDir(manifest: ProjectManifest, videoDir: string | null): string[] {
-  if (!videoDir) return manifest.e2e.artifacts;
-  const covered = manifest.e2e.artifacts.some((a) => a === videoDir || a.startsWith(`${videoDir}/`) || videoDir.startsWith(`${a}/`) || a === videoDir.split("/").pop());
-  return covered ? manifest.e2e.artifacts : [...manifest.e2e.artifacts, videoDir];
+export function withVideoDir(e2e: E2eConfig, videoDir: string | null): string[] {
+  if (!videoDir) return e2e.artifacts;
+  const covered = e2e.artifacts.some((a) => a === videoDir || a.startsWith(`${videoDir}/`) || videoDir.startsWith(`${a}/`) || a === videoDir.split("/").pop());
+  return covered ? e2e.artifacts : [...e2e.artifacts, videoDir];
 }
 
 // Probes for a Playwright config without a video setting and, when found,
@@ -188,16 +199,16 @@ export function withVideoDir(manifest: ProjectManifest, videoDir: string | null)
 // Non-Playwright commands or any probe failure → env-only fallback (logged).
 export async function forceVideoOn(
   sandbox: Sandbox,
-  manifest: ProjectManifest,
+  e2e: E2eConfig,
   cwd: string,
   log: (line: string) => void,
 ): Promise<{ command: string; videoDir: string | null }> {
-  const fallback = { command: manifest.e2e.command, videoDir: videoDirFor(manifest) };
-  if (!isPlaywrightCommand(manifest.e2e.command)) {
+  const fallback = { command: e2e.command, videoDir: videoDirFor(e2e) };
+  if (!isPlaywrightCommand(e2e.command)) {
     log("Non-Playwright e2e command; video forced via env only");
     return fallback;
   }
-  if (manifest.e2e.command.includes("--config")) return fallback;
+  if (e2e.command.includes("--config")) return fallback;
   try {
     const ls = await sandbox.exec(`ls playwright.config.* 2>/dev/null || ls config/playwright.* 2>/dev/null || true`, { cwd });
     const configFile = ls.stdout.split("\n").map((s) => s.trim()).find(Boolean);
@@ -214,14 +225,14 @@ export async function forceVideoOn(
       `export default { ...b, use: { ...(b?.use ?? {}), video: 'retain-on-failure', screenshot: 'only-on-failure' } };\n`;
     await sandbox.writeFile(OVERLAY_PATH, overlay);
     log(`Forcing Playwright video via overlay config ${OVERLAY_PATH} (extends ${configFile})`);
-    return { command: `${manifest.e2e.command} --config ${OVERLAY_PATH}`, videoDir: fallback.videoDir };
+    return { command: `${e2e.command} --config ${OVERLAY_PATH}`, videoDir: fallback.videoDir };
   } catch (e) {
     log(`Video overlay probe failed; falling back to env injection: ${errorMessage(e)}`);
     return fallback;
   }
 }
 
-function videoDirFor(manifest: ProjectManifest): string | null {
-  if (!isPlaywrightCommand(manifest.e2e.command)) return null;
-  return manifest.e2e.cwd === "." ? "test-results" : `${manifest.e2e.cwd}/test-results`;
+function videoDirFor(e2e: E2eConfig): string | null {
+  if (!isPlaywrightCommand(e2e.command)) return null;
+  return e2e.cwd === "." ? "test-results" : `${e2e.cwd}/test-results`;
 }
