@@ -1,10 +1,13 @@
-# Fixed runtime image for every Sandbox. The Project Manifest never selects images.
+# Minimal opencode runner for every Sandbox. Provides node + Playwright browsers
+# (via the base image), git, pnpm and opencode only. All other toolchains
+# (dotnet, python, rust, bun, ...) come from the Project Manifest's `setup`
+# commands, which run as root inside the workspace.
 # Default (macOS/Linux): Alpine-linked opencode 2.0.8 via musl shims.
 # Windows alternative (auto-selected on win32, see select-dockerfile.mjs): sandbox/Dockerfile.windows.
 FROM mcr.microsoft.com/playwright:v1.62.1-noble
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends git ca-certificates dotnet-sdk-8.0 \
+  && apt-get install -y --no-install-recommends git ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
 
 # opencode is a musl-linked Alpine binary; Ubuntu/glibc base needs the musl loader.
@@ -27,7 +30,8 @@ ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 \
     NUGET_PACKAGES=/cache/nuget
 
 # Scope the musl lib path to opencode only: a global LD_LIBRARY_PATH would make
-# glibc binaries (node, dotnet) pick up the Alpine libstdc++ and fail to start.
+# glibc binaries (node and anything the manifest installs, e.g. dotnet) pick up
+# the Alpine libstdc++ and fail to start.
 RUN mv /usr/local/bin/opencode /usr/local/bin/opencode.bin \
   && printf '#!/bin/sh\nexec env LD_LIBRARY_PATH=/usr/lib:/lib /usr/local/bin/opencode.bin "$@"\n' > /usr/local/bin/opencode \
   && chmod +x /usr/local/bin/opencode

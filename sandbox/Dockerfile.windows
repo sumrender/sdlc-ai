@@ -1,4 +1,6 @@
-# Windows-dev variant of the Sandbox runtime image.
+# Windows-dev variant of the Sandbox runtime image (minimal opencode runner:
+# node + Playwright browsers via the base image, git, pnpm and opencode only;
+# all other toolchains come from the Project Manifest's `setup` commands).
 # The official OpenCode image is Alpine/musl and its binary does not run on this glibc base,
 # so install the glibc build from the GitHub release instead.
 # Auto-selected on win32 (see select-dockerfile.mjs); override with DOCKERFILE=Dockerfile.windows.
@@ -6,7 +8,7 @@
 FROM mcr.microsoft.com/playwright:v1.62.1-noble
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends git ca-certificates dotnet-sdk-8.0 \
+  && apt-get install -y --no-install-recommends git ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
 
 # The official OpenCode image is Alpine/musl and its binary does not run on this glibc base,
