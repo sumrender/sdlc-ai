@@ -19,7 +19,7 @@ export function buildE2EComment(input: E2EReportInput & { taskUrl: string; video
   const { task, run, generatedSpecPath, taskUrl, videoUrl } = input;
   const passed = run.status === "COMPLETED" && run.exitCode === 0;
   const headline = passed ? "✅ E2E passed" : "❌ E2E failed";
-  const counts = `${run.passed ?? 0} passed, ${run.failed ?? 0} failed${run.skipped ? `, ${run.skipped} skipped` : ""}`;
+  const counts = run.passed != null ? `${run.passed} passed, ${run.failed ?? 0} failed${run.skipped ? `, ${run.skipped} skipped` : ""}` : "n/a";
   const specLine = generatedSpecPath ? `\n- New test added by E2E: \`${generatedSpecPath}\`` : "";
   const videoLine = videoUrl ? `\n- 🎬 [Watch the test video](${videoUrl})` : "";
   return `${E2E_MARKER}\n### ${headline} — ${counts}\n\n- Task: ${task.title}\n- Control plane: ${taskUrl}${specLine}${videoLine}\n\n_Test Run ${run.id.slice(0, 8)} · attempt ${run.attempt} · exit ${run.exitCode ?? "n/a"}_`;
@@ -92,7 +92,7 @@ async function refreshPrBody(
   const current = await deps.github.getPullRequestBody(pullNumber).catch(() => "");
   const section =
     `${BODY_SECTION_START}\n## Latest E2E\n` +
-    `- ${run.status === "COMPLETED" && run.exitCode === 0 ? "✅ passed" : "❌ failed"}: ${run.passed ?? 0} passed, ${run.failed ?? 0} failed (attempt ${run.attempt})\n` +
+    `- ${run.status === "COMPLETED" && run.exitCode === 0 ? "✅ passed" : "❌ failed"}: ${run.passed != null ? `${run.passed} passed, ${run.failed ?? 0} failed` : "n/a"} (attempt ${run.attempt})\n` +
     (generatedSpecPath ? `- New test: \`${generatedSpecPath}\`\n` : "") +
     (videoUrl ? `- 🎬 [Watch the test video](${videoUrl})\n` : "") +
     `- [Open in control plane](${url})\n${BODY_SECTION_END}`;

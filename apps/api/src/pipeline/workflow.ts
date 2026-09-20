@@ -338,7 +338,7 @@ export class WorkflowService {
       if (number == null) throw new HttpError(400, `Could not parse PR reference "${input.pullRef}". Use a number or full PR URL.`);
       const pr = await this.deps.github.getPullRequest(number);
       if (pr.merged || pr.state !== "open") throw new HttpError(422, `PR #${number} is ${pr.merged ? "merged" : pr.state}; only open PRs can be adopted.`);
-      await this.throwIfDuplicate(pr.number, undefined, input.force);
+      await this.throwIfDuplicate(pr.number, undefined, input.force, pr.head);
       const [task] = await db
         .insert(tasks)
         .values({
@@ -411,11 +411,12 @@ export class WorkflowService {
     return task!;
   }
 
-  private async throwIfDuplicate(pullNumber?: number, issueNumber?: number, force?: boolean): Promise<void> {
+  private async throwIfDuplicate(pullNumber?: number, issueNumber?: number, force?: boolean, branchName?: string): Promise<void> {
     if (force) return;
     const conditions = [];
     if (pullNumber != null) conditions.push(eq(tasks.pullRequestNumber, pullNumber));
     if (issueNumber != null) conditions.push(eq(tasks.issueNumber, issueNumber));
+    if (branchName) conditions.push(eq(tasks.branchName, branchName));
     if (conditions.length === 0) return;
     const [existing] = await db
       .select({ id: tasks.id, title: tasks.title, stage: tasks.stage })
@@ -423,7 +424,7 @@ export class WorkflowService {
       .where(or(...conditions))
       .limit(1);
     if (existing) {
-      const ref = pullNumber != null ? `PR #${pullNumber}` : `issue #${issueNumber}`;
+      const ref = pullNumber != null ? `PR #${pullNumber}` : issueNumber != null ? `issue #${issueNumber}` : `branch ${branchName}`;
       throw new HttpError(409, `A task for ${ref} already exists (${existing.title} · ${existing.stage}). Pass force:true to create another anyway.`, DUPLICATE_TASK_ERROR_CODE);
     }
   }
@@ -495,6 +496,27 @@ export class WorkflowService {
     } else {
       await updateTask(taskId, { status: "RUNNING", error: null, stageEnteredAt: new Date() });
     }
+    await bus.emit(taskId, "TASK_STATUS_CHANGED", { status: "RUNNING", from: "FAILED", to: "RUNNING", stage: task.stage });
+    await this.advance(taskId);
+    return requireTask(taskId);
+  }
+
+  /** Retry with a fresh branch: clears old branch/PR refs so the Developer creates a new one. */
+  async retryWithNewBranch(taskId: string): Promise<TaskRow> {
+    const task = await requireTask(taskId);
+    const retryable = retryAvailability(task);
+    if (!retryable.allowed) throw new HttpError(409, retryable.reason);
+
+    const newBranch = `${BRANCH_PREFIX}${taskId.slice(0, 8)}-${slugify(task.title)}`;
+    await updateTask(taskId, {
+      branchName: newBranch,
+      pullRequestNumber: null,
+      pullRequestUrl: null,
+      status: "RUNNING",
+      error: null,
+      stageEnteredAt: new Date(),
+    });
+    await bus.emit(taskId, "TASK_RETRIED", { stage: task.stage, previousError: task.error, newBranch });
     await bus.emit(taskId, "TASK_STATUS_CHANGED", { status: "RUNNING", from: "FAILED", to: "RUNNING", stage: task.stage });
     await this.advance(taskId);
     return requireTask(taskId);

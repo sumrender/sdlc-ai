@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { RotateCcw, Undo2 } from "lucide-react";
+import { GitBranch, RotateCcw, Undo2 } from "lucide-react";
 import { retryAvailability, sendBackAvailability, type TaskDetail } from "@sdlc-ai/shared";
 import { Button } from "~/components/ui/button";
 import { useApi } from "~/lib/api-context";
@@ -19,19 +19,33 @@ export function TaskActions({ task }: TaskActionsProps) {
     void queryClient.invalidateQueries({ queryKey: tasksQueryKey });
   };
   const retry = useMutation({ mutationFn: () => client.retryTask(task.id), onSuccess });
+  const retryNewBranch = useMutation({ mutationFn: () => client.retryWithNewBranchTask(task.id), onSuccess });
   const sendBack = useMutation({ mutationFn: () => client.sendBackTask(task.id), onSuccess });
 
   const canRetry = retryAvailability(task);
   const canSendBack = sendBackAvailability(task);
   if (!canRetry.allowed && !canSendBack.allowed) return null;
-  const error = retry.error ?? sendBack.error;
-  const busy = retry.isPending || sendBack.isPending;
+  const error = retry.error ?? retryNewBranch.error ?? sendBack.error;
+  const busy = retry.isPending || retryNewBranch.isPending || sendBack.isPending;
 
   return (
     <div className="flex flex-wrap items-center gap-2">
       {canRetry.allowed && (
         <Button size="sm" onClick={() => retry.mutate()} disabled={busy} title={`Re-run ${task.stage.replace("_", " ")} from scratch`}>
           <RotateCcw /> {retry.isPending ? "Retrying…" : task.stage === "STAGING" ? "Retry (re-poll)" : "Retry"}
+        </Button>
+      )}
+      {canRetry.allowed && task.stage !== "STAGING" && (
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => {
+            if (window.confirm(`Give this task a fresh branch (${task.branchName} will be abandoned) and retry?`)) retryNewBranch.mutate();
+          }}
+          disabled={busy}
+          title="Clear branch/PR refs and retry on a fresh branch"
+        >
+          <GitBranch /> {retryNewBranch.isPending ? "Retrying…" : "Retry with new branch"}
         </Button>
       )}
       {canSendBack.allowed && (

@@ -538,6 +538,16 @@ export function createFixtureApi(): FixtureApi {
       if (task.stage === "E2E") after(STEP_MS, () => runTests(taskId));
       return toDetail(taskId);
     },
+    retryWithNewBranchTask: async (taskId) => {
+      const task = find(taskId);
+      const availability = retryAvailability(task);
+      if (!availability.allowed) throw new ApiRequestError(409, availability.reason, "NOT_RETRYABLE");
+      const newBranch = `sdlc/${taskId.slice(0, 8)}-${slugify(task.title)}`;
+      emit(taskId, "TASK_RETRIED", { stage: task.stage, previousError: task.error, newBranch });
+      patchTask(taskId, { error: null, branchName: newBranch, pullRequestNumber: null, pullRequestUrl: null });
+      emit(taskId, "TASK_STATUS_CHANGED", { status: "RUNNING", from: "FAILED", to: "RUNNING", stage: task.stage });
+      return toDetail(taskId);
+    },
     sendBackTask: async (taskId) => {
       const task = find(taskId);
       const availability = sendBackAvailability(task);

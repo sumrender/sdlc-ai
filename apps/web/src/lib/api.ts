@@ -38,6 +38,7 @@ export interface ApiClient {
   /** The Task with every Agent Run, Test Run, Question, Review, Approval, Deployment, Artifact, and Event. */
   getTask(taskId: string): Promise<TaskDetail>;
   retryTask(taskId: string): Promise<TaskDetail>;
+  retryWithNewBranchTask(taskId: string): Promise<TaskDetail>;
   sendBackTask(taskId: string): Promise<TaskDetail>;
   /** The human's decision at HUMAN REVIEW. Returns the Task after the workflow engine has acted on it. */
   decideApproval(taskId: string, approvalId: string, input: DecideApprovalInput): Promise<TaskDetail>;
@@ -86,6 +87,7 @@ export function createApiClient({ origin, fetch = globalThis.fetch }: ApiClientO
     resetDemo: () => post(API_PATHS.resetDemo, ResetDemoResultSchema, { confirm: true }),
     getTask: (taskId) => request(API_PATHS.task(taskId), TaskDetailSchema),
     retryTask: (taskId) => post(API_PATHS.retryTask(taskId), TaskDetailSchema),
+    retryWithNewBranchTask: (taskId) => post(API_PATHS.retryWithNewBranchTask(taskId), TaskDetailSchema),
     sendBackTask: (taskId) => post(API_PATHS.sendBackTask(taskId), TaskDetailSchema),
     decideApproval: (taskId, approvalId, input) => post(API_PATHS.decideApproval(taskId, approvalId), TaskDetailSchema, input),
     getProjectSettings: () => request(API_PATHS.project, ProjectSettingsSchema),

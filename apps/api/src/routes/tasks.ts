@@ -34,6 +34,10 @@ export function taskRoutes(workflow: WorkflowService, store: ArtifactStore) {
     await workflow.retry(c.req.param("id"));
     return c.json(await workflow.taskDetail(c.req.param("id")));
   });
+  r.post("/:id/retry-with-new-branch", async (c) => {
+    await workflow.retryWithNewBranch(c.req.param("id"));
+    return c.json(await workflow.taskDetail(c.req.param("id")));
+  });
   r.post("/:id/send-back", async (c) => {
     await workflow.sendBackToDevelopment(c.req.param("id"));
     return c.json(await workflow.taskDetail(c.req.param("id")));

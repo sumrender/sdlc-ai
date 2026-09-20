@@ -108,7 +108,6 @@ export async function prepareWorkspaceReuse(sandbox: Sandbox, github: GitHubServ
     const definition = AGENT_DEFINITIONS[agent];
     await sandbox.writeFile(`${WORKSPACE}/.opencode/agent/${definition.name}.md`, definition.content);
   }
-  await ensureCleanOrReset(sandbox, options.log, { afterCheckout: true });
 }
 
 function setupHash(manifest: ProjectManifest): string {
@@ -129,25 +128,26 @@ async function markSetupDone(sandbox: Sandbox, manifest: ProjectManifest): Promi
 }
 
 /**
- * Clean-guard: `git status --porcelain` must be empty before switching agents.
- * Auto-reset + continue: drop injected agent files, hard-reset tracked files,
- * remove untracked leftovers (overlay configs, test-results), then re-check.
+ * Clean-guard: git-tracked files must be clean before switching agents.
+ * Ignores .opencode/ (injected agent files) and overlay configs so they
+ * are never deleted by the pre-switch reset. Agent files are stripped by
+ * commitAndPushScript before commit so they are never pushed.
  */
-export async function ensureCleanOrReset(sandbox: Sandbox, log: (line: string) => void, opts: { afterCheckout?: boolean } = {}): Promise<void> {
-  const status = await sandbox.exec(`git status --porcelain`, { cwd: WORKSPACE });
+export async function ensureCleanOrReset(sandbox: Sandbox, log: (line: string) => void): Promise<void> {
+  // Check tracked files only; .opencode/ and overlay configs are injected per-run and intentionally dirty.
+  const status = await sandbox.exec(`git status --porcelain -- . ':!.opencode'`, { cwd: WORKSPACE });
   if (status.exitCode !== 0) throw new WorkspaceError(`git status failed: ${status.stderr.trim()}`);
   if (!status.stdout.trim()) return;
   log(`Workspace not clean before switch; auto-resetting (${status.stdout.split("\n").filter(Boolean).length} file(s))`);
-  await sandbox.exec(`rm -f .opencode/agent/sdlc-*.md; rmdir .opencode/agent 2>/dev/null || true; rmdir .opencode 2>/dev/null || true; rm -f /tmp/sdlc-pw.config.ts`, {
-    cwd: WORKSPACE,
-  });
-  const reset = await sandbox.exec(`git reset -q --hard HEAD && git clean -fdq`, { cwd: WORKSPACE });
+  // Remove stale overlay config (but never touch .opencode/ — agent files are per-run).
+  await sandbox.exec(`rm -f /tmp/sdlc-pw.config.ts`, { cwd: WORKSPACE });
+  const reset = await sandbox.exec(`git reset -q --hard HEAD && git clean -fdq -- . ':!.opencode'`, { cwd: WORKSPACE });
   if (reset.exitCode !== 0) throw new WorkspaceError(`workspace reset failed: ${reset.stderr.trim()}`);
-  const recheck = await sandbox.exec(`git status --porcelain`, { cwd: WORKSPACE });
+  const recheck = await sandbox.exec(`git status --porcelain -- . ':!.opencode'`, { cwd: WORKSPACE });
   if (recheck.stdout.trim()) {
     throw new WorkspaceError(`workspace still dirty after reset: ${recheck.stdout.trim().slice(0, 1000)}`);
   }
-  log(opts.afterCheckout ? "Workspace clean" : "Workspace reset to clean");
+  log("Workspace reset to clean");
 }
 
 // Shared commit+push used by the Developer and the E2E test writer.

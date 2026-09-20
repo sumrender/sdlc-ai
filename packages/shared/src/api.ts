@@ -68,6 +68,7 @@ export const API_PATHS = {
   task: (taskId: string) => `/tasks/${taskId}`,
   startTask: (taskId: string) => `/tasks/${taskId}/start`,
   retryTask: (taskId: string) => `/tasks/${taskId}/retry`,
+  retryWithNewBranchTask: (taskId: string) => `/tasks/${taskId}/retry-with-new-branch`,
   sendBackTask: (taskId: string) => `/tasks/${taskId}/send-back`,
   answerQuestion: (taskId: string, questionId: string) => `/tasks/${taskId}/questions/${questionId}/answer`,
   decideApproval: (taskId: string, approvalId: string) => `/tasks/${taskId}/approvals/${approvalId}/decide`,

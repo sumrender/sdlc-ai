@@ -15,7 +15,7 @@ export function GitHubLinks({ task }: GitHubLinksProps) {
   const commitUrl = repoUrl && task.mergedCommitSha ? `${repoUrl}/commit/${task.mergedCommitSha}` : null;
 
   const rows: Array<{ icon: typeof CircleDot; label: string; value: string | null; href: string | null; pending: string }> = [
-    { icon: CircleDot, label: "Issue", value: task.issueNumber ? `#${task.issueNumber}` : null, href: task.issueUrl, pending: "Not yet opened" },
+    { icon: CircleDot, label: "Issue", value: task.issueNumber ? `#${task.issueNumber}` : null, href: task.issueUrl, pending: task.pullRequestNumber ? "PR-adopted" : "Not yet opened" },
     { icon: GitBranch, label: "Branch", value: task.branchName, href: branchUrl, pending: "Created in DEVELOPMENT" },
     { icon: GitPullRequest, label: "Pull request", value: task.pullRequestNumber ? `#${task.pullRequestNumber}` : null, href: task.pullRequestUrl, pending: "Opened by the Developer" },
     { icon: GitMerge, label: "Merged commit", value: task.mergedCommitSha ? task.mergedCommitSha.slice(0, 7) : null, href: commitUrl, pending: "After Approval" },
