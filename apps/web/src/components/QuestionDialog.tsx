@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AnswerQuestionInputSchema, type BoardTask, type Question } from "@sdlc-ai/shared";
+import { Markdown } from "~/components/Markdown";
 import { Button } from "~/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "~/components/ui/dialog";
 import { Label } from "~/components/ui/label";
@@ -46,7 +47,7 @@ export function QuestionDialog({ task, question, open, onOpenChange }: QuestionD
           <DialogDescription>{task.title}</DialogDescription>
         </DialogHeader>
 
-        <p className="text-sm leading-relaxed">{question.text}</p>
+        <Markdown text={question.text} />
 
         {options.length > 0 ? (
           <div role="radiogroup" aria-label="Options" className="flex flex-col gap-2">

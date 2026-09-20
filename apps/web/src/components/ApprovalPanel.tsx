@@ -14,6 +14,7 @@ import {
 } from "~/components/ui/alert-dialog";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
+import { Markdown } from "~/components/Markdown";
 import { Label } from "~/components/ui/label";
 import { Textarea } from "~/components/ui/textarea";
 import { useApi } from "~/lib/api-context";
@@ -153,7 +154,11 @@ export function DecidedApproval({ approval }: { approval: Approval }) {
         <Badge variant={approved ? "success" : "destructive"}>{approval.status}</Badge>
         {approval.decidedAt && <span className="text-xs text-muted-foreground">{formatDateTime(approval.decidedAt)}</span>}
       </div>
-      {approval.feedback && <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-relaxed text-foreground/90">{approval.feedback}</pre>}
+      {approval.feedback && (
+        <div className="text-foreground/90">
+          <Markdown text={approval.feedback} />
+        </div>
+      )}
       {!approval.feedback && <p className="text-xs text-muted-foreground">{approved ? "Merged and moved to STAGING." : "Sent back to DEVELOPMENT."}</p>}
     </div>
   );

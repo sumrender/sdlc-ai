@@ -9,6 +9,7 @@ import { DeploymentStatus } from "~/components/DeploymentStatus";
 import { EventTimeline } from "~/components/EventTimeline";
 import { GitHubLinks } from "~/components/GitHubLinks";
 import { LogViewer } from "~/components/LogViewer";
+import { Markdown } from "~/components/Markdown";
 import { PlanViewer } from "~/components/PlanViewer";
 import { QuestionDialog } from "~/components/QuestionDialog";
 import { ReviewPanel, summarizeReviews } from "~/components/ReviewPanel";
@@ -95,7 +96,11 @@ function TaskDetailView({ task, live }: { task: TaskDetail; live: ReturnType<typ
           <p className="mt-1 text-[13px] text-muted-foreground">
             in {STAGE_LABEL[task.stage]} · Created {formatDateTime(task.createdAt)} · entered {STAGE_LABEL[task.stage]} {formatDateTime(task.stageEnteredAt)}
           </p>
-          {task.description && <p className="mt-2 max-w-3xl text-sm text-muted-foreground">{task.description}</p>}
+          {task.description && (
+            <div className="mt-2 max-w-3xl text-muted-foreground">
+              <Markdown text={task.description} />
+            </div>
+          )}
         </div>
         <div className="flex shrink-0 flex-col items-end gap-2">
           {live.streamStatus === "reconnecting" && (
@@ -113,13 +118,14 @@ function TaskDetailView({ task, live }: { task: TaskDetail; live: ReturnType<typ
         </div>
       )}
       {pendingQuestion && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm">
-          <p className="flex items-center gap-2 text-amber-800">
-            <MessageCircleQuestion className="h-4 w-4 shrink-0" aria-hidden />
-            <span>
-              The Planner has a Question: <span className="font-medium text-foreground">{pendingQuestion.text}</span>
-            </span>
-          </p>
+        <div className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm">
+          <div className="flex min-w-0 flex-1 items-start gap-2 text-amber-800">
+            <MessageCircleQuestion className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+            <div className="min-w-0 flex-1">
+              <p className="font-medium">The Planner has a Question</p>
+              <Markdown text={pendingQuestion.text} className="[&>p]:my-1" />
+            </div>
+          </div>
           <Button size="sm" onClick={() => setQuestionOpen(true)}>
             Answer
           </Button>

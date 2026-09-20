@@ -1,5 +1,6 @@
 import { AppWindow, Loader2, Server, type LucideIcon } from "lucide-react";
 import { REVIEWERS, SEVERITIES, type AgentRun, type Finding, type Review, type Reviewer, type Severity } from "@sdlc-ai/shared";
+import { Markdown } from "~/components/Markdown";
 import { Badge } from "~/components/ui/badge";
 import { formatTime } from "~/lib/task-detail";
 import { cn } from "~/lib/utils";
@@ -175,7 +176,7 @@ function FindingRow({ finding }: { finding: Finding }) {
         {finding.severity}
       </span>
       <div className="min-w-0">
-        <p className="text-sm leading-snug">{finding.message}</p>
+        <Markdown text={finding.message} className="[&>p]:my-0" />
         {location && (
           <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground" title={location}>
             {location}
