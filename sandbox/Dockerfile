@@ -2,7 +2,8 @@
 # (via the base image), git, pnpm and opencode only. All other toolchains
 # (dotnet, python, rust, bun, ...) come from the Project Manifest's `setup`
 # commands, which run as root inside the workspace.
-# Default (macOS/Linux): Alpine-linked opencode 2.0.8 via musl shims.
+# Default (macOS/Linux): the Alpine/musl opencode 2.0.8 binary, run directly via
+# the musl loader (no wrapper script — see the ld-musl path note below).
 # Windows alternative (auto-selected on win32, see select-dockerfile.mjs): sandbox/Dockerfile.windows.
 FROM mcr.microsoft.com/playwright:v1.62.1-noble
 
@@ -32,24 +33,58 @@ ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 \
     npm_config_cache=/cache/npm \
     NUGET_PACKAGES=/cache/nuget
 
-# Scope the musl lib path to the opencode process only, via the loader's
-# --library-path (never LD_LIBRARY_PATH, which every child process would
-# inherit and use to resolve glibc binaries' libstdc++ to the musl build).
-# The loader path is arch-dependent (x86_64/aarch64), so discover it at build time.
-RUN LOADER="$(ls /lib/ld-musl-*.so.1 2>/dev/null | head -n1)" \
-  && test -n "$LOADER" \
-  && mv /usr/local/bin/opencode /usr/local/bin/opencode.bin \
-  && printf '#!/bin/sh\nexec %s --library-path /opt/opencode-libs /usr/local/bin/opencode.bin "$@"\n' "$LOADER" > /usr/local/bin/opencode \
-  && chmod +x /usr/local/bin/opencode
+# Point the *musl* loader at /opt/opencode-libs through its own search-path file
+# (/etc/ld-musl-$ARCH.path). This is scoped exactly right: only musl-linked
+# binaries (i.e. opencode) consult it, while glibc binaries — node, Chrome, and
+# whatever the Manifest's setup installs — resolve through glibc's ld.so and are
+# untouched. A global LD_LIBRARY_PATH would have made them load the musl
+# libstdc++ and fail to start.
+#
+# Do NOT wrap opencode in a loader shim (`exec ld-musl-*.so.1 --library-path ...
+# opencode.bin "$@"`). That works for `opencode --version` but breaks `opencode
+# run`: the shim makes /proc/self/exe the loader, so opencode re-execs its own
+# server as `ld-musl-aarch64.so.1 serve` and dies with
+#   Error: Server process exited with code 1
+#   /usr/lib/<arch>-linux-musl/libc.so: cannot load serve: No such file or directory
+# The binary's PT_INTERP is already the musl loader, so it runs directly.
+RUN set -eu; \
+  ARCH="$(uname -m)"; \
+  PATHFILE="/etc/ld-musl-${ARCH}.path"; \
+  test -f "$PATHFILE" || printf '/lib/%s-linux-musl\n/usr/lib/%s-linux-musl\n' "$ARCH" "$ARCH" > "$PATHFILE"; \
+  echo /opt/opencode-libs >> "$PATHFILE"; \
+  # Debian reassembles $PATHFILE from this directory when musl is reconfigured.
+  if [ -d "/etc/ld-musl-${ARCH}.d" ]; then echo /opt/opencode-libs > "/etc/ld-musl-${ARCH}.d/opencode.path"; fi; \
+  # Guard the invariant above: opencode must stay a real ELF binary. `opencode
+  # --version` passes even when wrapped, so check the file shape, not just the exit code.
+  head -c 4 /usr/local/bin/opencode | od -An -c | grep -q 'E   L   F' \
+    || { echo "FATAL: /usr/local/bin/opencode is not an ELF binary; a wrapper script breaks 'opencode run'" >&2; exit 1; }; \
+  opencode --version
 
 # Karma's ChromeHeadless: expose Playwright's Chromium (not on PATH) as
 # CHROME_BIN through a wrapper that adds --no-sandbox (containers run as root),
 # so tasks don't need to ship their own karma/chrome workaround files.
-RUN CHROME="$(find /ms-playwright -type f -path '*/chrome-linux/chrome' | head -n1)" \
-  && test -n "$CHROME" \
-  && ln -sf "$CHROME" /opt/chrome \
-  && printf '#!/bin/sh\nexec /opt/chrome --no-sandbox "$@"\n' > /usr/local/bin/chrome \
-  && chmod +x /usr/local/bin/chrome
+# The browser directory name is arch-dependent (chrome-linux, chrome-linux-arm64,
+# ...), so glob instead of hardcoding, and skip chromium_headless_shell-* (it
+# ships `headless_shell`, which Karma's ChromeHeadless launcher cannot drive).
+# Fail the build loudly if no working Chrome is found: a missing or broken
+# CHROME_BIN makes every project's frontend unit tests skip silently.
+RUN set -eu; \
+  CHROME=""; \
+  for candidate in /ms-playwright/chromium-*/chrome-linux*/chrome; do \
+    [ -x "$candidate" ] || continue; \
+    CHROME="$candidate"; \
+    break; \
+  done; \
+  if [ -z "$CHROME" ]; then \
+    echo "FATAL: no Chromium at /ms-playwright/chromium-*/chrome-linux*/chrome" >&2; \
+    ls -la /ms-playwright >&2 || true; \
+    exit 1; \
+  fi; \
+  ln -sf "$CHROME" /opt/chrome; \
+  printf '#!/bin/sh\nexec /opt/chrome --no-sandbox "$@"\n' > /usr/local/bin/chrome; \
+  chmod +x /usr/local/bin/chrome; \
+  echo "CHROME_BIN -> $CHROME"; \
+  /usr/local/bin/chrome --version
 ENV CHROME_BIN=/usr/local/bin/chrome
 
 WORKDIR /workspace

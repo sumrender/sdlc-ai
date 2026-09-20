@@ -26,4 +26,27 @@ ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 \
     npm_config_cache=/cache/npm \
     NUGET_PACKAGES=/cache/nuget
 
+# Keep in sync with sandbox/Dockerfile: expose Playwright's Chromium as
+# CHROME_BIN (wrapped with --no-sandbox) so Karma's ChromeHeadless works without
+# each project shipping its own workaround. Fails the build loudly if no working
+# Chrome is found, because a missing CHROME_BIN skips frontend unit tests silently.
+RUN set -eu; \
+  CHROME=""; \
+  for candidate in /ms-playwright/chromium-*/chrome-linux*/chrome; do \
+    [ -x "$candidate" ] || continue; \
+    CHROME="$candidate"; \
+    break; \
+  done; \
+  if [ -z "$CHROME" ]; then \
+    echo "FATAL: no Chromium at /ms-playwright/chromium-*/chrome-linux*/chrome" >&2; \
+    ls -la /ms-playwright >&2 || true; \
+    exit 1; \
+  fi; \
+  ln -sf "$CHROME" /opt/chrome; \
+  printf '#!/bin/sh\nexec /opt/chrome --no-sandbox "$@"\n' > /usr/local/bin/chrome; \
+  chmod +x /usr/local/bin/chrome; \
+  echo "CHROME_BIN -> $CHROME"; \
+  /usr/local/bin/chrome --version
+ENV CHROME_BIN=/usr/local/bin/chrome
+
 WORKDIR /workspace
