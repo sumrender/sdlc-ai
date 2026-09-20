@@ -1,10 +1,11 @@
 import { Hono } from "hono";
-import { UpdateProjectSettingsInputSchema } from "@sdlc-ai/shared";
+import { UpdateProjectSettingsInputSchema, type SandboxImageStatus } from "@sdlc-ai/shared";
 import { env } from "../env.js";
 import { errorMessage } from "../errors.js";
 import { loadManifest } from "../integrations/manifest.js";
 import { getProject } from "../pipeline/tasks.js";
 import type { WorkflowService } from "../pipeline/workflow.js";
+import { checkSandboxImage } from "../sandbox/image-stamp.js";
 import { parseBody } from "./app.js";
 
 export function projectRoutes(workflow: WorkflowService) {
@@ -31,10 +32,12 @@ export function projectRoutes(workflow: WorkflowService) {
 
 async function readSettings(workflow: WorkflowService) {
   const project = await getProject();
-  const [github, manifest, activeTasks] = await Promise.all([
+  const [github, manifest, activeTasks, sandboxImageStatus] = await Promise.all([
     workflow.deps.github.connectionStatus(),
     readManifest(workflow, project.defaultBranch),
     workflow.activeTasks(),
+    // Re-read every request (not cached) so the warning clears as soon as the image is rebuilt.
+    readSandboxImageStatus(),
   ]);
   const active = activeTasks.map((t) => ({ id: t.id, title: t.title, stage: t.stage }));
   return {
@@ -47,6 +50,7 @@ async function readSettings(workflow: WorkflowService) {
     },
     models: { developer: env.MODEL_DEVELOPER, fast: env.MODEL_FAST },
     sandboxImage: env.SANDBOX_IMAGE,
+    sandboxImageStatus,
     fakes: env.SDLC_FAKES,
     activeTask: active[0] ?? null,
     activeTasks: active,
@@ -54,6 +58,12 @@ async function readSettings(workflow: WorkflowService) {
     maxConcurrentTasks: project.maxConcurrentTasks ?? 3,
     reuseSandbox: project.reuseSandbox ?? true,
   };
+}
+
+/** With fakes there is no Docker host, so there is no image to be stale. */
+async function readSandboxImageStatus(): Promise<SandboxImageStatus> {
+  if (env.SDLC_FAKES) return { ok: true, warning: null };
+  return checkSandboxImage(env.SANDBOX_IMAGE, env.DOCKER_BIN);
 }
 
 async function readManifest(workflow: WorkflowService, ref: string) {

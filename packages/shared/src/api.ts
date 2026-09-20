@@ -98,6 +98,16 @@ export const ManifestReadSchema = z.discriminatedUnion("ok", [
 ]);
 export type ManifestRead = z.infer<typeof ManifestReadSchema>;
 
+/**
+ * Whether the Sandbox image on the Docker host was built from the Dockerfile currently on disk.
+ * A stale image silently drops tooling (CHROME_BIN, opencode shims), so it is surfaced, never enforced.
+ */
+export const SandboxImageStatusSchema = z.object({
+  ok: z.boolean(),
+  warning: z.string().nullable(),
+});
+export type SandboxImageStatus = z.infer<typeof SandboxImageStatusSchema>;
+
 /** Response of GET /project: everything the Settings page shows. Nothing here is hardcoded in the UI. */
 export const ProjectSettingsSchema = z.object({
   project: ProjectSchema,
@@ -106,6 +116,7 @@ export const ProjectSettingsSchema = z.object({
   deployProviders: z.object({ CLOUDFLARE: z.boolean(), RENDER: z.boolean() }),
   models: z.object({ developer: z.string(), fast: z.string() }),
   sandboxImage: z.string(),
+  sandboxImageStatus: SandboxImageStatusSchema.default({ ok: true, warning: null }),
   fakes: z.boolean(),
   activeTask: z.object({ id: z.string(), title: z.string(), stage: z.string() }).nullable(),
   activeTasks: z.array(z.object({ id: z.string(), title: z.string(), stage: z.string() })).default([]),

@@ -184,7 +184,13 @@ function SettingsView({ settings }: { settings: ProjectSettings }) {
               <span className="font-mono text-xs">{settings.models.fast}</span>
             </Row>
             <Row label="Sandbox image">
-              <span className="font-mono text-xs">{settings.sandboxImage}</span>
+              <div className="flex flex-col gap-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-xs">{settings.sandboxImage}</span>
+                  {settings.sandboxImageStatus.ok ? <Badge variant="success">Up to date</Badge> : <Badge variant="warning">Stale</Badge>}
+                </div>
+                {settings.sandboxImageStatus.warning && <p className="text-xs text-amber-700">{settings.sandboxImageStatus.warning}</p>}
+              </div>
             </Row>
             <Row label="Integrations">
               {settings.fakes ? <Badge variant="warning">Fakes (no Docker, GitHub, or deploy providers)</Badge> : <Badge variant="success">Live</Badge>}

@@ -12,6 +12,7 @@ import { RenderDeployProvider } from "./integrations/render.js";
 import { WorkflowService } from "./pipeline/workflow.js";
 import type { DeployProvider, GitHubService, SandboxRunner } from "./ports.js";
 import { DockerSandboxRunner } from "./sandbox/docker.js";
+import { checkSandboxImage } from "./sandbox/image-stamp.js";
 import { TaskSandboxPool } from "./sandbox/task-pool.js";
 import { createApp } from "./routes/app.js";
 
@@ -81,6 +82,13 @@ async function main() {
   const github = await workflow.deps.github.connectionStatus();
   if (github.ok) console.log(`[api] GitHub connected as ${github.login} to ${env.GITHUB_OWNER}/${env.GITHUB_REPO}`);
   else console.warn(`[api] GitHub check failed: ${github.error} — creating Tasks and Planning will fail until GITHUB_TOKEN is fixed`);
+
+  // Warn only: a stale image still runs, it just silently drops tooling the Dockerfile adds.
+  if (!env.SDLC_FAKES) {
+    const image = await checkSandboxImage(env.SANDBOX_IMAGE, env.DOCKER_BIN);
+    if (image.ok) console.log(`[api] sandbox image ${env.SANDBOX_IMAGE} matches sandbox/Dockerfile`);
+    else console.warn(`[api] STALE SANDBOX IMAGE — ${image.warning}`);
+  }
 
   if (env.SDLC_RESUME_ON_START) await workflow.recover();
   else console.warn("[api] SDLC_RESUME_ON_START=false — open Tasks are not resumed on boot");

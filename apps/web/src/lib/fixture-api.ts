@@ -161,6 +161,7 @@ const FIXTURE_SETTINGS: ProjectSettings = {
   deployProviders: { CLOUDFLARE: true, RENDER: false },
   models: { developer: "claude-sonnet-5", fast: "claude-haiku-4-5-20251001" },
   sandboxImage: "sdlc-ai-sandbox:local",
+  sandboxImageStatus: { ok: true, warning: null },
   fakes: true,
   activeTask: null,
   activeTasks: [],

@@ -25,7 +25,8 @@ cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 echo "==> building $IMAGE"
-docker build -f "$HERE/$DOCKERFILE" -t "$IMAGE" "$HERE"
+# Via build.mjs so the image gets the sdlc.dockerfile-sha stamp the API uses to detect staleness.
+DOCKERFILE="$DOCKERFILE" SANDBOX_IMAGE="$IMAGE" node "$HERE/build.mjs"
 
 echo "==> starting sandbox $NAME"
 docker run -d --rm --name "$NAME" \
@@ -35,6 +36,22 @@ docker run -d --rm --name "$NAME" \
 
 echo "==> toolchain (image provides git/node/pnpm/opencode only; other runtimes come from the manifest setup)"
 docker exec "$NAME" bash -c 'git --version && node --version && pnpm --version && opencode --version'
+
+# CHROME_BIN is what makes Karma's `ng test --browsers=ChromeHeadless` work in the Sandbox.
+# When it is missing the pipeline only logs "skipped (runner missing)", so assert it here.
+echo "==> CHROME_BIN (Karma ChromeHeadless)"
+docker exec "$NAME" bash -c '
+  set -eu
+  test -n "${CHROME_BIN:-}" || { echo "CHROME_BIN is empty" >&2; exit 1; }
+  test -x "$CHROME_BIN" || { echo "CHROME_BIN=$CHROME_BIN is not executable" >&2; exit 1; }
+  echo "CHROME_BIN=$CHROME_BIN -> $(readlink -f /opt/chrome)"
+  "$CHROME_BIN" --version | grep -Eiq "chrom(e|ium) [0-9]+\." || { echo "$CHROME_BIN --version did not report a Chrome version" >&2; exit 1; }
+  "$CHROME_BIN" --version
+'
+
+echo "==> image build stamp (staleness detection)"
+docker image inspect --format '{{index .Config.Labels "sdlc.dockerfile-sha"}}' "$IMAGE" \
+  | grep -Eq '^[0-9a-f]{64}$' || { echo "image $IMAGE is missing the sdlc.dockerfile-sha label" >&2; exit 1; }
 
 echo "==> cloning $REPO"
 if [ -n "${GITHUB_TOKEN:-}" ]; then
