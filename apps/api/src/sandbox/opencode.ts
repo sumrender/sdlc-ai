@@ -21,8 +21,17 @@ export interface OpenCodeResult {
   timedOut: boolean;
 }
 
+// `--standalone` is load-bearing, not a preference. By default `opencode run`
+// talks to a long-lived background service (`opencode serve --service`) that
+// caches each directory's config and only picks up new `.opencode/agent/*.md`
+// files when its file watcher fires. We inject the agent definition milliseconds
+// before invoking it, so on a reused Sandbox — where the container (and its
+// service) is already warm from an earlier Agent — the run loses that race and
+// dies instantly with `Agent not found: "sdlc-developer"`. A private server per
+// run reads the config at boot, which is deterministic; it costs ~600ms and
+// still resumes sessions, which live in the shared on-disk OpenCode database.
 export async function runOpenCode(sandbox: Sandbox, options: OpenCodeOptions): Promise<OpenCodeResult> {
-  const args = ["opencode", "run", "--format", "json", "--agent", options.agent, "--model", `opencode/${options.model}`];
+  const args = ["opencode", "run", "--standalone", "--format", "json", "--agent", options.agent, "--model", `opencode/${options.model}`];
   if (options.sessionId) args.push("--session", options.sessionId);
   const command = args.map(shellQuoteIfNeeded).join(" ");
 
