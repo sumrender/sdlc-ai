@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, inArray, ne, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ne, notInArray, or } from "drizzle-orm";
 import {
   ACTIVE_STAGES,
   DEFAULT_MAX_CONCURRENT_TASKS,
   DEMO_TASK,
+  DUPLICATE_TASK_ERROR_CODE,
   MAX_CONCURRENT_TASKS_ERROR_CODE,
   REVIEWERS,
   computeChangeScope,
+  parseGitHubRef,
   retryAvailability,
   scopedReviewers,
   sendBackAvailability,
@@ -328,6 +330,63 @@ export class WorkflowService {
   async createTask(input: CreateTaskInput): Promise<TaskRow> {
     const project = await getProject();
     const id = randomUUID();
+
+    // Adopt an existing PR (preferred) or issue: copy title/body from GitHub
+    // instead of creating a new issue. PR head branch is adopted as-is.
+    if (input.pullRef) {
+      const number = parseGitHubRef(input.pullRef);
+      if (number == null) throw new HttpError(400, `Could not parse PR reference "${input.pullRef}". Use a number or full PR URL.`);
+      const pr = await this.deps.github.getPullRequest(number);
+      if (pr.merged || pr.state !== "open") throw new HttpError(422, `PR #${number} is ${pr.merged ? "merged" : pr.state}; only open PRs can be adopted.`);
+      await this.throwIfDuplicate(pr.number, undefined, input.force);
+      const [task] = await db
+        .insert(tasks)
+        .values({
+          id,
+          projectId: project.id,
+          title: pr.title.slice(0, 200),
+          description: pr.body.slice(0, 10_000),
+          branchName: pr.head,
+          pullRequestNumber: pr.number,
+          pullRequestUrl: pr.url,
+          stageEnteredAt: new Date(),
+        })
+        .returning();
+      await this.deps.github.createComment(pr.number, `SDLC task started: ${env.CONTROL_PLANE_URL}/tasks/${id}`).catch(() => undefined);
+      await bus.emit(id, "TASK_CREATED", {
+        task: { ...task!, activeAgent: null, pendingQuestion: null, pendingApprovalId: null },
+      });
+      return task!;
+    }
+
+    if (input.issueRef) {
+      const number = parseGitHubRef(input.issueRef);
+      if (number == null) throw new HttpError(400, `Could not parse issue reference "${input.issueRef}". Use a number or full issue URL.`);
+      const issue = await this.deps.github.getIssue(number);
+      await this.throwIfDuplicate(undefined, issue.number, input.force);
+      const title = issue.title.slice(0, 200);
+      const branchName = `${BRANCH_PREFIX}${id.slice(0, 8)}-${slugify(title)}`;
+      const [task] = await db
+        .insert(tasks)
+        .values({
+          id,
+          projectId: project.id,
+          title,
+          description: issue.body.slice(0, 10_000),
+          branchName,
+          issueNumber: issue.number,
+          issueUrl: issue.url,
+          stageEnteredAt: new Date(),
+        })
+        .returning();
+      await this.deps.github.createComment(issue.number, `SDLC task started: ${env.CONTROL_PLANE_URL}/tasks/${id}`).catch(() => undefined);
+      await bus.emit(id, "TASK_CREATED", {
+        task: { ...task!, activeAgent: null, pendingQuestion: null, pendingApprovalId: null },
+      });
+      return task!;
+    }
+
+    if (!input.title) throw new HttpError(400, "title: Required");
     const branchName = `${BRANCH_PREFIX}${id.slice(0, 8)}-${slugify(input.title)}`;
     const issue = await this.deps.github.createIssue(
       input.title,
@@ -350,6 +409,23 @@ export class WorkflowService {
       task: { ...task!, activeAgent: null, pendingQuestion: null, pendingApprovalId: null },
     });
     return task!;
+  }
+
+  private async throwIfDuplicate(pullNumber?: number, issueNumber?: number, force?: boolean): Promise<void> {
+    if (force) return;
+    const conditions = [];
+    if (pullNumber != null) conditions.push(eq(tasks.pullRequestNumber, pullNumber));
+    if (issueNumber != null) conditions.push(eq(tasks.issueNumber, issueNumber));
+    if (conditions.length === 0) return;
+    const [existing] = await db
+      .select({ id: tasks.id, title: tasks.title, stage: tasks.stage })
+      .from(tasks)
+      .where(or(...conditions))
+      .limit(1);
+    if (existing) {
+      const ref = pullNumber != null ? `PR #${pullNumber}` : `issue #${issueNumber}`;
+      throw new HttpError(409, `A task for ${ref} already exists (${existing.title} · ${existing.stage}). Pass force:true to create another anyway.`, DUPLICATE_TASK_ERROR_CODE);
+    }
   }
 
   async activeTasks(): Promise<TaskRow[]> {

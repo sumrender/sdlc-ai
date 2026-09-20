@@ -30,9 +30,29 @@ export class OctokitGitHubService implements GitHubService {
     return { number: data.number, url: data.html_url };
   }
 
+  async getIssue(number: number) {
+    const { data } = await this.octokit.rest.issues.get({ ...this.base, issue_number: number });
+    if (data.pull_request) throw new Error(`#${number} is a pull request, not an issue; use the PR field instead`);
+    return { number: data.number, title: data.title, body: data.body ?? "", url: data.html_url, state: data.state };
+  }
+
   async createPullRequest(input: { title: string; head: string; base: string; body: string }) {
     const { data } = await this.octokit.rest.pulls.create({ ...this.base, ...input });
     return { number: data.number, url: data.html_url };
+  }
+
+  async getPullRequest(number: number) {
+    const { data } = await this.octokit.rest.pulls.get({ ...this.base, pull_number: number });
+    return {
+      number: data.number,
+      title: data.title,
+      body: data.body ?? "",
+      url: data.html_url,
+      state: data.state,
+      head: data.head.ref,
+      base: data.base.ref,
+      merged: data.merged_at != null,
+    };
   }
 
   async getChangedFiles(pullNumber: number): Promise<string[]> {

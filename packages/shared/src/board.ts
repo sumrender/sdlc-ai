@@ -73,6 +73,8 @@ export type TaskStatusChangedPayload = z.infer<typeof TaskStatusChangedPayloadSc
 export const AgentRunStartedPayloadSchema = z.object({
   agentRunId: z.string(),
   agent: AgentSchema,
+  attempt: z.number().int().optional(),
+  model: z.string().optional(),
 });
 export type AgentRunStartedPayload = z.infer<typeof AgentRunStartedPayloadSchema>;
 

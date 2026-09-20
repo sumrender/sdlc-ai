@@ -7,7 +7,7 @@ import { AgentOutputError, SandboxError, TimeoutError, errorMessage } from "../e
 import { bus } from "../events/bus.js";
 import type { Sandbox } from "../ports.js";
 import type { Deps } from "../pipeline/deps.js";
-import { failTask, getProject, getTask } from "../pipeline/tasks.js";
+import { failTask, getProject, getTask, nextAgentAttempt } from "../pipeline/tasks.js";
 import { runOpenCode, type OpenCodeResult } from "../sandbox/opencode.js";
 import { TaskSandboxPool } from "../sandbox/task-pool.js";
 
@@ -22,11 +22,12 @@ export interface RunContext {
 
 export type AgentBody = (ctx: RunContext) => Promise<void>;
 
-export async function startAgentRun(deps: Deps, taskId: string, agent: Agent, body: AgentBody, attempt = 1): Promise<AgentRunRow> {
+export async function startAgentRun(deps: Deps, taskId: string, agent: Agent, body: AgentBody, attempt?: number): Promise<AgentRunRow> {
+  const resolved = attempt ?? (await nextAgentAttempt(taskId, agent));
   const model = agent === "DEVELOPER" ? env.MODEL_DEVELOPER : env.MODEL_FAST;
   const [run] = await db
     .insert(agentRuns)
-    .values({ taskId, agent, attempt, model, status: "QUEUED", createdAt: new Date() })
+    .values({ taskId, agent, attempt: resolved, model, status: "QUEUED", createdAt: new Date() })
     .returning();
   void execute(deps, run!, body);
   return run!;

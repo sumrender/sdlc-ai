@@ -3,9 +3,12 @@ import { MaxConcurrentTasksSchema, ProjectSchema } from "./domain";
 import { ProjectManifestSchema } from "./manifest";
 
 export const CreateTaskInputSchema = z.object({
-  title: z.string().trim().min(1).max(200),
+  title: z.string().trim().min(1).max(200).optional(),
   description: z.string().trim().max(10_000).default(""),
-});
+  issueRef: z.string().trim().min(1).max(300).optional(),
+  pullRef: z.string().trim().min(1).max(300).optional(),
+  force: z.boolean().optional(),
+}).refine((v) => v.title || v.issueRef || v.pullRef, { message: "title or issueRef/pullRef is required" });
 export type CreateTaskInput = z.infer<typeof CreateTaskInputSchema>;
 
 export const AnswerQuestionInputSchema = z.object({
@@ -46,6 +49,17 @@ export const UpdateProjectSettingsInputSchema = z.object({
 export type UpdateProjectSettingsInput = z.infer<typeof UpdateProjectSettingsInputSchema>;
 
 export const MAX_CONCURRENT_TASKS_ERROR_CODE = "MAX_CONCURRENT_TASKS" as const;
+export const DUPLICATE_TASK_ERROR_CODE = "DUPLICATE_TASK" as const;
+
+/** Accepts "123", "#123", or a full GitHub issue/PR URL; returns the number or null. */
+export function parseGitHubRef(ref: string): number | null {
+  const trimmed = ref.trim();
+  const urlMatch = trimmed.match(/github\.com\/[^/]+\/[^/]+\/(?:issues|pull)\/(\d+)/i);
+  if (urlMatch) return Number(urlMatch[1]);
+  const numMatch = trimmed.match(/^#?(\d+)$/);
+  if (numMatch) return Number(numMatch[1]);
+  return null;
+}
 
 /** REST and SSE paths, relative to the API origin. Shared so client and server never drift. */
 export const API_PATHS = {

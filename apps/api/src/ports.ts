@@ -36,11 +36,32 @@ export interface SandboxRunner {
   create(options: SandboxCreateOptions): Promise<Sandbox>;
 }
 
+export interface GitHubIssue {
+  number: number;
+  title: string;
+  body: string;
+  url: string;
+  state: string;
+}
+
+export interface GitHubPullRequest {
+  number: number;
+  title: string;
+  body: string;
+  url: string;
+  state: string;
+  head: string;
+  base: string;
+  merged: boolean;
+}
+
 export interface GitHubService {
   cloneUrl(): string;
   gitAuthHeader(): string;
   createIssue(title: string, body: string): Promise<{ number: number; url: string }>;
+  getIssue(number: number): Promise<GitHubIssue>;
   createPullRequest(input: { title: string; head: string; base: string; body: string }): Promise<{ number: number; url: string }>;
+  getPullRequest(number: number): Promise<GitHubPullRequest>;
   getChangedFiles(pullNumber: number): Promise<string[]>;
   squashMerge(pullNumber: number, commitTitle: string): Promise<{ sha: string }>;
   deleteBranch(name: string): Promise<void>;

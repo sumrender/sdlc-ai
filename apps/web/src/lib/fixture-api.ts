@@ -682,17 +682,18 @@ const PLAN = `1. In fe/src/components/GalleryHeader.tsx render "{templates.lengt
 function makeTask(input: CreateTaskInput, overrides: Partial<BoardTask> = {}): BoardTask {
   const at = now();
   const id = crypto.randomUUID();
+  const title = input.title ?? (input.pullRef ? `Adopted PR ${input.pullRef}` : input.issueRef ? `Adopted issue ${input.issueRef}` : "Untitled");
   return {
     id,
     projectId: "fixture-project",
-    title: input.title,
-    description: input.description,
+    title,
+    description: input.description ?? "",
     stage: "TODO",
     status: "READY",
     plan: null,
     issueNumber: 41,
     issueUrl: "https://github.com/sumrender/meme/issues/41",
-    branchName: `sdlc/${id.slice(0, 8)}-${slugify(input.title)}`,
+    branchName: `sdlc/${id.slice(0, 8)}-${slugify(title)}`,
     pullRequestNumber: null,
     pullRequestUrl: null,
     mergedCommitSha: null,

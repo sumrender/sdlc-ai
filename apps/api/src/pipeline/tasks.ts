@@ -98,6 +98,28 @@ export async function latestTestRun(taskId: string, since?: Date): Promise<TestR
   return run ?? null;
 }
 
+/** Next 1-based attempt number, counting CANCELLED runs so restarts never reuse "attempt 1". */
+export async function nextTestAttempt(taskId: string): Promise<number> {
+  const [row] = await db
+    .select({ attempt: testRuns.attempt })
+    .from(testRuns)
+    .where(eq(testRuns.taskId, taskId))
+    .orderBy(desc(testRuns.attempt))
+    .limit(1);
+  return (row?.attempt ?? 0) + 1;
+}
+
+/** Next 1-based attempt number for an agent, counting CANCELLED runs. */
+export async function nextAgentAttempt(taskId: string, agent: Agent): Promise<number> {
+  const [row] = await db
+    .select({ attempt: agentRuns.attempt })
+    .from(agentRuns)
+    .where(and(eq(agentRuns.taskId, taskId), eq(agentRuns.agent, agent)))
+    .orderBy(desc(agentRuns.attempt))
+    .limit(1);
+  return (row?.attempt ?? 0) + 1;
+}
+
 export async function pendingQuestion(taskId: string, since: Date): Promise<QuestionRow | null> {
   const [q] = await db
     .select()

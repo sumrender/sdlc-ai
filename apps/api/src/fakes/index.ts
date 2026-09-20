@@ -63,11 +63,26 @@ export class FakeGitHubService implements GitHubService {
     this.log.push(`issue #${number}: ${title}`);
     return { number, url: `https://github.com/fake/meme/issues/${number}` };
   }
+  async getIssue(number: number) {
+    return { number, title: `Fake issue #${number}`, body: `Fake issue body #${number}`, url: `https://github.com/fake/meme/issues/${number}`, state: "open" };
+  }
   async createPullRequest(input: { title: string; head: string }) {
     const number = ++this.pulls;
     this.branches.add(input.head);
     this.log.push(`pr #${number}: ${input.title}`);
     return { number, url: `https://github.com/fake/meme/pull/${number}` };
+  }
+  async getPullRequest(number: number) {
+    return {
+      number,
+      title: `Fake PR #${number}`,
+      body: `Fake PR body for #${number}`,
+      url: `https://github.com/fake/meme/pull/${number}`,
+      state: "open",
+      head: `sdlc/fake-pr-${number}`,
+      base: "main",
+      merged: false,
+    };
   }
   async getChangedFiles() {
     return (this as { changedFiles?: string[] }).changedFiles ?? ["fe/src/components/GalleryHeader.tsx", "fe/e2e/gallery.spec.ts"];

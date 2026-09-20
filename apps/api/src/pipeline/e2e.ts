@@ -13,10 +13,11 @@ import { prepareWorkspace, prepareWorkspaceReuse } from "../sandbox/workspace.js
 import { TaskSandboxPool } from "../sandbox/task-pool.js";
 import { TIMEOUTS, type Deps } from "./deps.js";
 import { postE2EReport } from "./e2e-report.js";
-import { failTask, getProject, getTask, tail } from "./tasks.js";
+import { failTask, getProject, getTask, nextTestAttempt, tail } from "./tasks.js";
 
-export async function startTestRun(deps: Deps, taskId: string, attempt = 1): Promise<TestRunRow> {
-  const [run] = await db.insert(testRuns).values({ taskId, attempt, status: "QUEUED", createdAt: new Date() }).returning();
+export async function startTestRun(deps: Deps, taskId: string, attempt?: number): Promise<TestRunRow> {
+  const resolved = attempt ?? (await nextTestAttempt(taskId));
+  const [run] = await db.insert(testRuns).values({ taskId, attempt: resolved, status: "QUEUED", createdAt: new Date() }).returning();
   void execute(deps, run!);
   return run!;
 }
