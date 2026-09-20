@@ -412,10 +412,13 @@ export class WorkflowService {
   }
 
   private async throwIfDuplicate(pullNumber?: number, issueNumber?: number, force?: boolean, branchName?: string): Promise<void> {
-    if (force) return;
     const conditions = [];
+    const isPrOrBranchDuplicate = pullNumber != null || !!branchName;
+    // PR/branch duplicates are never bypassed by force — they would share git state and PR.
+    // force only bypasses issueNumber duplicates (different task per issue with force flag).
+    if (force && !isPrOrBranchDuplicate) return;
     if (pullNumber != null) conditions.push(eq(tasks.pullRequestNumber, pullNumber));
-    if (issueNumber != null) conditions.push(eq(tasks.issueNumber, issueNumber));
+    if (issueNumber != null && !force) conditions.push(eq(tasks.issueNumber, issueNumber));
     if (branchName) conditions.push(eq(tasks.branchName, branchName));
     if (conditions.length === 0) return;
     const [existing] = await db
@@ -425,7 +428,11 @@ export class WorkflowService {
       .limit(1);
     if (existing) {
       const ref = pullNumber != null ? `PR #${pullNumber}` : issueNumber != null ? `issue #${issueNumber}` : `branch ${branchName}`;
-      throw new HttpError(409, `A task for ${ref} already exists (${existing.title} · ${existing.stage}). Pass force:true to create another anyway.`, DUPLICATE_TASK_ERROR_CODE);
+      const hint =
+        pullNumber != null || branchName
+          ? " PR and branch ownership is exclusive (force cannot bypass it); retry or retry-with-new-branch the existing task instead."
+          : " Pass force:true to create another anyway.";
+      throw new HttpError(409, `A task for ${ref} already exists (${existing.title} · ${existing.stage}).${hint}`, DUPLICATE_TASK_ERROR_CODE);
     }
   }
 

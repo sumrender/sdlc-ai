@@ -8,6 +8,10 @@ import type { Sandbox, SandboxCreateOptions, SandboxRunner } from "../ports.js";
  */
 export class TaskSandboxPool implements SandboxRunner {
   private readonly shared = new Map<string, { sandbox: Sandbox; lastUsedAt: number }>();
+  // Serialize all operations that touch /workspace for a given taskId.
+  // Parallel reviewers otherwise race on git fetch/checkout/reset + .opencode writes
+  // inside the same container.
+  private readonly chains = new Map<string, Promise<void>>();
 
   constructor(private readonly inner: SandboxRunner) {}
 
@@ -32,6 +36,22 @@ export class TaskSandboxPool implements SandboxRunner {
     const sandbox = await this.inner.create({ name: this.sharedName(taskId) });
     this.shared.set(taskId, { sandbox, lastUsedAt: Date.now() });
     return sandbox;
+  }
+
+  /** Serialize workspace-touching work for a task (prepareWorkspaceReuse, etc.). */
+  async withLock<T>(taskId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.chains.get(taskId) ?? Promise.resolve();
+    let release: () => void;
+    const next = new Promise<void>((res) => (release = res));
+    this.chains.set(taskId, prev.then(() => next));
+    await prev;
+    try {
+      return await fn();
+    } finally {
+      release!();
+      if (this.chains.get(taskId) === next) this.chains.delete(taskId);
+      else next.then(() => { if (this.chains.get(taskId) === next) this.chains.delete(taskId); });
+    }
   }
 
   async destroyTask(taskId: string): Promise<void> {

@@ -56,21 +56,30 @@ async function execute(deps: Deps, run: AgentRunRow, body: AgentBody): Promise<v
     const pool = deps.sandboxes instanceof TaskSandboxPool ? deps.sandboxes : null;
     const reuse = Boolean(pool && (project as { reuseSandbox?: boolean }).reuseSandbox);
     if (reuse && pool) {
-      sandbox = await pool.acquire(task.id);
-      log(`Reusing container ${sandbox.name} (setup once, fresh session)`);
+      const shared = await pool.acquire(task.id);
+      sandbox = shared;
+      log(`Reusing container ${shared.name} (setup once, fresh session)`);
+      // Serialize the whole agent body per task: parallel reviewers share this
+      // container's /workspace, and concurrent git fetch/checkout/reset +
+      // opencode runs would interleave (mixed diffs, PR comment races).
+      await pool.withLock(task.id, () => body({ deps, sandbox: shared, log, run, task, project }));
     } else {
-      sandbox = await deps.sandboxes.create({
+      const own = await deps.sandboxes.create({
         name: `sdlc-${run.agent.toLowerCase().replace(/_/g, "-")}-${run.id.slice(0, 8)}-a${run.attempt}`,
         // The Planner's answer run resumes the question run's session from a new Sandbox.
         sessionVolume: run.agent === "PLANNER" ? `sdlc-ai-opencode-${run.taskId}` : undefined,
       });
+      sandbox = own;
+      await body({ deps, sandbox: own, log, run, task, project });
     }
-    await body({ deps, sandbox, log, run, task, project });
     log(`${run.agent} completed`);
   } catch (e) {
     error = errorMessage(e);
     if (e instanceof TimeoutError) {
       outcome = "TIMED_OUT";
+      // Timeouts are often transient stalls (cold container, slow provider);
+      // give the run one more attempt instead of failing the task outright.
+      willRetry = run.attempt < 2;
     } else {
       outcome = "FAILED";
       willRetry = e instanceof SandboxError && run.attempt < 2;

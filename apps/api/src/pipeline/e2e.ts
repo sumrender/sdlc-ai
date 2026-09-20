@@ -113,6 +113,8 @@ async function execute(deps: Deps, run: TestRunRow): Promise<void> {
     error = errorMessage(e);
     if (e instanceof TimeoutError) {
       status = "TIMED_OUT";
+      // Transient stalls get one retry, same as SandboxError.
+      willRetry = run.attempt < 2;
     } else {
       status = "FAILED";
       willRetry = e instanceof SandboxError && run.attempt < 2;

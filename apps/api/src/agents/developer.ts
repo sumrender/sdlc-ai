@@ -87,25 +87,44 @@ async function runChecks(ctx: RunContext, manifest: ProjectManifest): Promise<{ 
   const scopeLabel = scope.shared ? "both stacks (shared changes)" : [scope.frontend && "frontend", scope.backend && "backend"].filter(Boolean).join(" + ");
   log(`Change scope: ${scopeLabel} (${changedFiles.length} changed file(s))`);
 
-  const commands: CheckCommand[] = [
-    ...scopedChecks(manifest, scope).map((command) => ({ command })),
-    ...scopedUnitTests(manifest, scope).map((u) => ({ command: u.command, cwd: u.cwd, env: u.env })),
-  ];
+  const scopedChecksList = scopedChecks(manifest, scope).map((command) => ({ command, optional: false }));
+  const scopedTests = scopedUnitTests(manifest, scope).map((u) => ({ command: u.command, cwd: u.cwd, env: u.env, optional: u.optional }));
+  const commands: (CheckCommand & { optional: boolean })[] = [...scopedChecksList, ...scopedTests];
   await bus.emit(task.id, "CHECKS_STARTED", { commands: commands.map((c) => c.command), scope: scopeLabel });
   const deadline = Date.now() + TIMEOUTS.CHECKS;
-  for (const { command, cwd, env } of commands) {
-    log(`$ ${command}`);
+  for (const { command, cwd, env, optional } of commands) {
+    log(`$ ${command}${optional ? " (optional)" : ""}`);
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new TimeoutError("Checks timed out after 10 minutes");
     const result = await sandbox.exec(command, { cwd: cwd && cwd !== "." ? `${WORKSPACE}/${cwd}` : WORKSPACE, env, timeoutMs: remaining, onLine: log });
     if (result.timedOut) throw new TimeoutError("Checks timed out after 10 minutes");
     if (result.exitCode !== 0) {
+      const output = tail(`${result.stdout}\n${result.stderr}`, 8000);
+      if (optional && isOptionalRunnerMissing(output)) {
+        log(`[warn] Optional check "${command}" skipped (runner missing): ${output.slice(0, 300)}`);
+        await bus.emit(task.id, "CHECKS_COMPLETED", { ok: true, command, skippedOptional: true });
+        continue;
+      }
       await bus.emit(task.id, "CHECKS_COMPLETED", { ok: false, command, exitCode: result.exitCode });
-      return { command, output: tail(`${result.stdout}\n${result.stderr}`, 8000) };
+      return { command, output };
     }
   }
   await bus.emit(task.id, "CHECKS_COMPLETED", { ok: true, commands: commands.map((c) => c.command) });
   return null;
+}
+
+function isOptionalRunnerMissing(output: string): boolean {
+  const lower = output.toLowerCase();
+  // Karma / Chrome missing
+  if (lower.includes("no binary for chromeheadless") || lower.includes('please, set "chrome_bin"') || lower.includes("cannot start chrome") || lower.includes("chromeheadless failed") || (lower.includes("launcher") && lower.includes("failed"))) return true;
+  if (lower.includes("chrome not found") || lower.includes("chromium not found")) return true;
+  // Karma config missing but optional
+  if (lower.includes("karma") && lower.includes("not found")) return true;
+  // dotnet / test runner missing
+  if (lower.includes("dotnet: command not found") || lower.includes("no test is available") || lower.includes("no test matches")) return true;
+  // Playwright missing browser
+  if (lower.includes("browser not installed") || lower.includes("playwright test needs browsers")) return true;
+  return false;
 }
 
 /** Files changed on the task branch vs the default branch, plus untracked files. Empty on any error (caller runs everything). */
@@ -115,12 +134,14 @@ async function changedFilesInWorkspace(ctx: RunContext): Promise<string[]> {
   const out = new Set<string>();
   const diff = await sandbox.exec(`git diff --name-only ${shellQuote(base)}...HEAD; git diff --name-only`, { cwd: WORKSPACE });
   for (const line of diff.stdout.split("\n").map((s) => s.trim())) if (line) out.add(line);
-  const status = await sandbox.exec(`git status --porcelain`, { cwd: WORKSPACE });
+  // Exclude control-plane injected files (.opencode/) like ensureCleanOrReset does,
+  // otherwise every run looks "shared" and fe-only changes run backend checks too.
+  const status = await sandbox.exec(`git status --porcelain -- . ':!.opencode'`, { cwd: WORKSPACE });
   for (const line of status.stdout.split("\n")) {
     const m = line.match(/^\?\?\s+(.+)$/);
     if (m?.[1]) out.add(m[1].trim().replace(/^"(.*)"$/, "$1"));
   }
-  return [...out];
+  return [...out].filter((f) => f !== ".opencode" && !f.startsWith(".opencode/"));
 }
 
 function developerPrompt(task: TaskRow, manifest: ProjectManifest): string {

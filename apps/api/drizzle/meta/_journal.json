@@ -43,6 +43,13 @@
       "when": 1789900000000,
       "tag": "0005_stack_reviewers",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1789950000000,
+      "tag": "0006_unique_task_refs",
+      "breakpoints": true
     }
   ]
 }

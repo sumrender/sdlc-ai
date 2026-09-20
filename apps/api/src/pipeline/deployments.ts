@@ -9,8 +9,11 @@ import type { Deps } from "./deps.js";
 const MIN_POLL_INTERVAL_MS = 4_000;
 
 export function computeTouchedTargets(changedFiles: string[], targets: DeployTargetConfig[]): DeployTargetConfig[] {
-  const touched = targets.filter((t) => changedFiles.some((f) => f.startsWith(t.pathPrefix)));
-  return touched.length > 0 ? touched : targets;
+  // Matched targets only. The old fallback ("no prefix match → deploy all")
+  // turned an empty/unknown diff into real provider deployments that each had
+  // to go LIVE within 15 minutes or fail the task. No matches → no deployments;
+  // STAGING then completes immediately without provider work.
+  return targets.filter((t) => changedFiles.some((f) => f.startsWith(t.pathPrefix)));
 }
 
 export const isTerminalDeployment = (d: DeploymentRow) => d.status === "LIVE" || d.status === "FAILED" || d.status === "TIMED_OUT";
@@ -25,8 +28,21 @@ export async function pollDeployments(deps: Deps, task: TaskRow): Promise<Deploy
 
     const provider = deps.deployProviders[d.provider];
     if (!provider) {
-      if (d.error !== "provider not configured") {
-        await db.update(deployments).set({ error: "provider not configured", lastPolledAt: now }).where(eq(deployments.id, d.id));
+      // Fail fast instead of polling to the 15-minute deployment timeout: a
+      // configured target without provider credentials won't resolve on its
+      // own. retry() resets FAILED deployments to PENDING for a clean re-poll.
+      const error = `provider ${d.provider} is not configured`;
+      if (d.status !== "FAILED" || d.error !== error) {
+        await db.update(deployments).set({ status: "FAILED", error, lastPolledAt: now }).where(eq(deployments.id, d.id));
+        if (d.status !== "FAILED") {
+          await bus.emit(task.id, "DEPLOYMENT_UPDATED", {
+            deploymentId: d.id,
+            target: d.target,
+            provider: d.provider,
+            from: d.status,
+            to: "FAILED",
+          });
+        }
       }
       continue;
     }

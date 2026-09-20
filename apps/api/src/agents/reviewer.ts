@@ -4,7 +4,7 @@ import { reviews, type TaskRow, type TestRunRow } from "../db/schema.js";
 import { bus } from "../events/bus.js";
 import { loadManifest } from "../integrations/manifest.js";
 import { TIMEOUTS } from "../pipeline/deps.js";
-import { latestTestRun, tail } from "../pipeline/tasks.js";
+import { latestTestRun } from "../pipeline/tasks.js";
 import { WORKSPACE } from "../sandbox/docker.js";
 import { extractJsonBlock } from "../sandbox/opencode.js";
 import { shellQuote } from "../sandbox/process.js";
@@ -38,12 +38,20 @@ export const reviewerBody =
     // container don't contend on the same SQLite store. Fresh session always.
     const dataDir = reuse ? `/tmp/opencode-${reviewer.toLowerCase()}` : null;
 
-    const diff = await sandbox.exec(`git diff ${shellQuote(`origin/${project.defaultBranch}`)}...HEAD`, { cwd: WORKSPACE });
+    // Align with developer's change-scope: committed diff + untracked, minus .opencode.
+    // Also note truncation explicitly so reviewer knows it's partial.
+    const base = `origin/${project.defaultBranch}`;
+    const diffResult = await sandbox.exec(`git diff ${shellQuote(base)}...HEAD -- . ':!.opencode'; echo "---UNTRACKED---"; git status --porcelain -- . ':!.opencode' | awk '/^\\?\\?/ {print $2}' | while read -r f; do echo "+++ untracked: $f"; cat -- "$f" 2>/dev/null | head -c 20000; echo; done`, { cwd: WORKSPACE });
+    const rawDiff = diffResult.stdout;
+    const diff =
+      rawDiff.length > 80_000
+        ? `${rawDiff.slice(-80_000)}\n\n[diff truncated from ${rawDiff.length} chars; see the full diff in the run logs]`
+        : rawDiff;
     const testRun = await latestTestRun(task.id);
 
     let result = await invokeAgent(ctx, {
       agentName: AGENT_DEFINITIONS[reviewer].name,
-      prompt: reviewerPrompt(reviewer, task, diff.stdout, testRun),
+      prompt: reviewerPrompt(reviewer, task, diff, testRun),
       timeoutMs: TIMEOUTS.REVIEWER,
       label: reviewer,
       dataDir,
@@ -105,7 +113,7 @@ ${tests}
 
 # Diff against the default branch
 \`\`\`diff
-${tail(diff, 80_000) || "(empty diff)"}
+${diff || "(empty diff)"}
 \`\`\`
 
 Review this change strictly for ${FOCUS[reviewer]}. You may read any file in the checked-out branch for context. End your final message with the fenced JSON block described in your instructions.`;

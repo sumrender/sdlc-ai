@@ -1,4 +1,5 @@
-import { boolean, integer, jsonb, pgEnum, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { boolean, integer, jsonb, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import {
   AGENTS,
   APPROVAL_STATUSES,
@@ -45,6 +46,9 @@ export const projects = pgTable("projects", {
   createdAt: ts("created_at").notNull().defaultNow(),
 });
 
+// One owner per PR / branch: partial unique indexes (NULLs never conflict).
+// Duplicate ownership previously slipped in via PR adoption, making two tasks
+// commit to the same branch and delete it under each other on merge.
 export const tasks = pgTable("tasks", {
   id: uuid("id").primaryKey().defaultRandom(),
   projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
@@ -69,7 +73,16 @@ export const tasks = pgTable("tasks", {
   stageEnteredAt: ts("stage_entered_at").notNull().defaultNow(),
   createdAt: ts("created_at").notNull().defaultNow(),
   updatedAt: ts("updated_at").notNull().defaultNow(),
-});
+  },
+  (t) => [
+    uniqueIndex("tasks_pull_request_number_key")
+      .on(t.pullRequestNumber)
+      .where(sql`${t.pullRequestNumber} is not null`),
+    uniqueIndex("tasks_branch_name_key")
+      .on(t.branchName)
+      .where(sql`${t.branchName} is not null`),
+  ],
+);
 
 export const agentRuns = pgTable("agent_runs", {
   id: uuid("id").primaryKey().defaultRandom(),

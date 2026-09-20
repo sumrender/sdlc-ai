@@ -7,6 +7,7 @@ import { loadManifest } from "../integrations/manifest.js";
 import { TIMEOUTS } from "../pipeline/deps.js";
 import { tail } from "../pipeline/tasks.js";
 import { WORKSPACE } from "../sandbox/docker.js";
+import { shellQuote } from "../sandbox/process.js";
 import { commitAndPush, prepareWorkspace, prepareWorkspaceReuse } from "../sandbox/workspace.js";
 import { AGENT_DEFINITIONS } from "./definitions.js";
 import { invokeAgent, type AgentBody } from "./runner.js";
@@ -37,8 +38,21 @@ export const e2eTestWriterBody: AgentBody = async (ctx) => {
     label: "E2E_TEST_WRITER",
   });
 
-  const specPath = detectSpecPath(result.text) ?? (await newestSpec(sandbox, manifest.e2e.cwd, log));
-  const { noChanges } = await commitAndPush(sandbox, deps.github, branch, `Add E2E coverage for: ${task.title}`, log);
+  let specPath = detectSpecPath(result.text) ?? (await newestSpec(sandbox, manifest.e2e.cwd, log));
+  // The writer may report the spec path relative to the e2e cwd; normalize to
+  // repo-relative so `git add -- <path>` (and the stored e2eGeneratedSpecPath)
+  // resolve from the repo root.
+  if (specPath && manifest.e2e.cwd !== ".") {
+    const exists = async (p: string) =>
+      (await sandbox.exec(`test -f ${shellQuote(p)} && echo SDLC_EXISTS`, { cwd: WORKSPACE })).stdout.includes("SDLC_EXISTS");
+    if (!(await exists(specPath))) {
+      const nested = `${manifest.e2e.cwd.replace(/\/+$/, "")}/${specPath}`;
+      if (await exists(nested)) specPath = nested;
+    }
+  }
+  // Commit only the detected spec: the reused workspace can hold stray
+  // untracked files, and `git add -A` would push them onto the branch unseen.
+  const { noChanges } = await commitAndPush(sandbox, deps.github, branch, `Add E2E coverage for: ${task.title}`, log, specPath ? [specPath] : undefined);
   if (noChanges && !specPath) throw new AgentOutputError("E2E test writer produced no spec to commit");
 
   const resolved = specPath ?? "e2e spec (path not reported)";
@@ -70,21 +84,27 @@ ${changedFiles.length ? changedFiles.map((f) => `- ${f}`).join("\n") : "- (unkno
 - Do NOT commit or push. End with a line: SPEC_PATH: <relative path of the spec you wrote>.`;
 }
 
+const SPEC_PATH_SUFFIX = /\.(?:spec|e2e)\.[a-z]+$/i;
+
 // The writer is instructed to end with "SPEC_PATH: <path>".
 export function detectSpecPath(text: string): string | null {
   const match = text.match(/SPEC_PATH:\s*([^\s`'"]+\.spec\.[a-z]+|[^\s`'"]+\.e2e\.[a-z]+)/i);
   return match ? match[1]!.trim() : null;
 }
 
+// NUL-delimited `git status --porcelain=v1 -z`, parsed in JS instead of awk:
+// unquoted paths, rename-safe, and repo-relative (run from the repo root,
+// scoped to the e2e cwd). Rename entries emit the old path as a bare NUL
+// segment without an XY prefix, which the status-char filter drops.
 async function newestSpec(sandbox: { exec: (cmd: string, opts?: { cwd?: string }) => Promise<{ stdout: string }> }, cwd: string, log: (l: string) => void): Promise<string | null> {
   try {
-    const dir = cwd === "." ? WORKSPACE : `${WORKSPACE}/${cwd}`;
-    const found = await sandbox.exec(
-      `git status --porcelain | awk '{print $2}' | grep -E '\\.(spec|e2e)\\.[a-z]+$' | head -5; git diff --cached --name-only | grep -E '\\.(spec|e2e)\\.[a-z]+$' | head -5`,
-      { cwd: dir },
-    );
-    const first = found.stdout.split("\n").map((s) => s.trim()).find(Boolean);
-    return first ?? null;
+    const found = await sandbox.exec(`git status --porcelain=v1 -z -- ${shellQuote(cwd)}`, { cwd: WORKSPACE });
+    const spec = found.stdout
+      .split("\0")
+      .filter((entry) => /^[A-Z?! ]{2} /.test(entry))
+      .map((entry) => entry.slice(3))
+      .find((p) => SPEC_PATH_SUFFIX.test(p));
+    return spec ?? null;
   } catch (e) {
     log(`Could not detect new spec path: ${tail(String(e), 500)}`);
     return null;

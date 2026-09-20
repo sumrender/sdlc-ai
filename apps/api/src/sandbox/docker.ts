@@ -13,6 +13,9 @@ export class DockerSandboxRunner implements SandboxRunner {
   ) {}
 
   async create({ name, sessionVolume }: SandboxCreateOptions): Promise<Sandbox> {
+    // API restart orphans pooled containers ( --rm only removes on daemon stop).
+    // Proactively remove any stale container with the same name before creating.
+    await runProcess(this.dockerBin, ["rm", "-f", name]).catch(() => undefined);
     const args = ["run", "-d", "--rm", "--name", name, "-v", `${CACHE_VOLUME}:/cache`];
     if (sessionVolume) args.push("-v", `${sessionVolume}:${OPENCODE_DATA_DIR}`);
     args.push(
