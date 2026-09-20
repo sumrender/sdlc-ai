@@ -306,6 +306,13 @@ function E2EView({ e2e }: { e2e: Extract<ProjectSettings["manifest"], { ok: true
           <dd className="font-mono text-xs">{e2e.cwd}</dd>
         </div>
         <div>
+          {/* testDir is Playwright's own testDir, relative to cwd; show it joined so it reads as a real repo path. */}
+          <dt className="text-xs text-muted-foreground">Spec directory</dt>
+          <dd className="font-mono text-xs">
+            {joinPath(e2e.cwd, e2e.testDir)} <span className="font-sans text-muted-foreground">({e2e.testDir} relative to the working directory)</span>
+          </dd>
+        </div>
+        <div>
           <dt className="text-xs text-muted-foreground">Environment</dt>
           <dd className="font-mono text-xs">
             {env.length === 0 ? <span className="font-sans text-muted-foreground">None</span> : env.map(([k, v]) => <div key={k}>{`${k}=${v}`}</div>)}
@@ -320,6 +327,12 @@ function E2EView({ e2e }: { e2e: Extract<ProjectSettings["manifest"], { ok: true
       </dl>
     </div>
   );
+}
+
+/** Joins a manifest `cwd` with a path relative to it, collapsing the repo-root `"."` case. */
+function joinPath(cwd: string, relative: string): string {
+  const base = cwd.replace(/\/+$/, "");
+  return base === "" || base === "." ? relative : `${base}/${relative}`;
 }
 
 function CommandList({ title, commands, empty }: { title: string; commands: string[]; empty: string }) {

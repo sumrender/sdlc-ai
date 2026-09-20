@@ -2,10 +2,7 @@ import { CircleDot, GitBranch, GitMerge, GitPullRequest, Clapperboard } from "lu
 import type { Task } from "@sdlc-ai/shared";
 
 export interface GitHubLinksProps {
-  task: Pick<
-    Task,
-    "issueNumber" | "issueUrl" | "branchName" | "pullRequestNumber" | "pullRequestUrl" | "mergedCommitSha" | "e2eReportCommentUrl" | "e2eReportVideoUrl"
-  >;
+  task: Pick<Task, "issueNumber" | "issueUrl" | "branchName" | "pullRequestNumber" | "pullRequestUrl" | "mergedCommitSha" | "e2eReportCommentUrl">;
 }
 
 /** Links to the GitHub Issue, branch, and PR as each comes to exist. */
@@ -19,11 +16,14 @@ export function GitHubLinks({ task }: GitHubLinksProps) {
     { icon: GitBranch, label: "Branch", value: task.branchName, href: branchUrl, pending: "Created in DEVELOPMENT" },
     { icon: GitPullRequest, label: "Pull request", value: task.pullRequestNumber ? `#${task.pullRequestNumber}` : null, href: task.pullRequestUrl, pending: "Opened by the Developer" },
     { icon: GitMerge, label: "Merged commit", value: task.mergedCommitSha ? task.mergedCommitSha.slice(0, 7) : null, href: commitUrl, pending: "After Approval" },
+    // Deliberately *not* falling back to e2eReportVideoUrl: that now holds a
+    // control-plane URL back to this very Task, which under a GitHub heading
+    // would just send the reader in a circle. Videos live in the Test Run panel.
     {
       icon: Clapperboard,
       label: "E2E report",
-      value: task.e2eReportVideoUrl ? "Video" : task.e2eReportCommentUrl ? "PR comment" : null,
-      href: task.e2eReportVideoUrl ?? task.e2eReportCommentUrl,
+      value: task.e2eReportCommentUrl ? "PR comment" : null,
+      href: task.e2eReportCommentUrl,
       pending: "Posted after each Test Run",
     },
   ];

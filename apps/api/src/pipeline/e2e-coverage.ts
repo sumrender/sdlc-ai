@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import { e2eSpecDir, type E2eConfig } from "@sdlc-ai/shared";
 import { db } from "../db/index.js";
 import { tasks, type TaskRow } from "../db/schema.js";
 import { bus } from "../events/bus.js";
@@ -21,20 +22,27 @@ export type LlmCoverageCheck = (input: {
   e2eCwd: string;
 }) => Promise<{ covered: boolean; rationale: string }>;
 
-// A path counts as spec-like when it looks like a test file, lives under
-// __tests__, or sits under the manifest's e2e cwd with a spec/test suffix.
-export function isSpecLike(path: string, e2eCwd: string): boolean {
+// Suffixes Playwright's default `testMatch` picks up. `.test.ts`/`.test.tsx`
+// and `__tests__/` are deliberately absent: those are unit-test conventions,
+// and treating them as e2e coverage is what let an Angular/Karma unit spec
+// (fe/src/app/.../api-docs.component.spec.ts) green-light the E2E gate.
+const PLAYWRIGHT_SPEC_SUFFIXES = [".spec.ts", ".spec.tsx", ".spec.js", ".spec.mjs", ".e2e.ts", ".e2e.js"];
+
+// A changed path counts as e2e coverage only when Playwright would actually
+// run it: inside the resolved `<cwd>/<testDir>` AND carrying a spec suffix. A
+// helper or fixture under the same directory is support code, not coverage.
+// Matching is case-insensitive because GitHub reports paths verbatim while
+// manifests are hand-written.
+export function isSpecLike(path: string, e2e: Pick<E2eConfig, "cwd" | "testDir">): boolean {
   const p = path.toLowerCase();
-  if (p.endsWith(".spec.ts") || p.endsWith(".spec.tsx") || p.endsWith(".spec.js") || p.endsWith(".e2e.ts") || p.endsWith(".e2e.js")) return true;
-  if (p.includes("__tests__/") || p.endsWith(".test.ts") || p.endsWith(".test.tsx")) return true;
-  const cwd = e2eCwd === "." ? "" : `${e2eCwd.toLowerCase().replace(/\/$/, "")}/`;
-  if (cwd && p.startsWith(cwd) && (p.includes("spec") || p.includes("e2e") || p.includes("test"))) return true;
-  return false;
+  const specDir = e2eSpecDir(e2e).toLowerCase();
+  if (specDir && !p.startsWith(`${specDir}/`)) return false;
+  return PLAYWRIGHT_SPEC_SUFFIXES.some((suffix) => p.endsWith(suffix));
 }
 
 // Heuristic pass: the diff itself adds/touches a spec → covered, no LLM call.
-export function heuristicCovered(changedFiles: string[], e2eCwd: string): { covered: boolean; specFiles: string[] } {
-  const specFiles = changedFiles.filter((f) => isSpecLike(f, e2eCwd));
+export function heuristicCovered(changedFiles: string[], e2e: Pick<E2eConfig, "cwd" | "testDir">): { covered: boolean; specFiles: string[] } {
+  const specFiles = changedFiles.filter((f) => isSpecLike(f, e2e));
   return { covered: specFiles.length > 0, specFiles };
 }
 
@@ -61,7 +69,7 @@ export async function ensureCoverage(deps: Deps, task: TaskRow, llmCheck: LlmCov
     return { covered: true, rationale: "No e2e suite configured in the manifest; coverage not required." };
   }
   const changedFiles = task.pullRequestNumber ? await deps.github.getChangedFiles(task.pullRequestNumber) : [];
-  const { covered, specFiles } = heuristicCovered(changedFiles, manifest.e2e.cwd);
+  const { covered, specFiles } = heuristicCovered(changedFiles, manifest.e2e);
 
   let result: CoverageResult;
   if (covered) {

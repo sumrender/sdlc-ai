@@ -136,11 +136,6 @@ export class FakeGitHubService implements GitHubService {
     this.prBodies.set(pullNumber, body);
     this.log.push(`updated pr #${pullNumber} body`);
   }
-  async uploadVideoAsset(fileName: string) {
-    const url = `https://github.com/fake/meme/releases/download/sdlc-e2e-assets/${fileName}`;
-    this.log.push(`uploaded video asset ${fileName}`);
-    return { url, name: fileName };
-  }
   async connectionStatus() {
     return { ok: true, login: "fake-bot" };
   }

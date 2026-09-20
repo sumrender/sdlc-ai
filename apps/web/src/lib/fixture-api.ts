@@ -155,7 +155,14 @@ const FIXTURE_SETTINGS: ProjectSettings = {
         unitTests: { command: "dotnet test be/Tests/Backend.Tests.csproj --no-build", cwd: ".", env: {}, optional: true },
         integrations: [{ name: "PostgreSQL 15 + EF Core", notes: "Code-first migrations; connection via be/.env" }],
       },
-      e2e: { command: "npm run test:e2e", cwd: "fe", env: { CI: "1", BASE_URL: "http://localhost:5173" }, artifacts: ["fe/playwright-report", "fe/test-results"], optional: false },
+      e2e: {
+        command: "npm run test:e2e",
+        cwd: "fe",
+        testDir: "e2e",
+        env: { CI: "1", BASE_URL: "http://localhost:5173" },
+        artifacts: ["fe/playwright-report", "fe/test-results"],
+        optional: false,
+      },
     },
   },
   deployProviders: { CLOUDFLARE: true, RENDER: false },
@@ -605,6 +612,7 @@ export function createFixtureApi(): FixtureApi {
       return content;
     },
     artifactContentUrl: (taskId, artifactId) => `fixture://artifacts/${taskId}/${artifactId}`,
+    testRunReportUrl: (taskId, testRunId, filePath) => `fixture://report/${taskId}/${testRunId}/${filePath}`,
     eventsUrl: (taskId) => (taskId ? `${EVENTS_URL}?taskId=${taskId}` : EVENTS_URL),
   };
 

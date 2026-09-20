@@ -6,7 +6,7 @@ import { Hono } from "hono";
 import { AnswerQuestionInputSchema, CreateTaskInputSchema, DecideApprovalInputSchema } from "@sdlc-ai/shared";
 import { CONTENT_TYPES, type ArtifactStore } from "../artifacts/store.js";
 import { db } from "../db/index.js";
-import { artifacts } from "../db/schema.js";
+import { artifacts, testRuns } from "../db/schema.js";
 import { HttpError } from "../errors.js";
 import type { WorkflowService } from "../pipeline/workflow.js";
 import { requireTask } from "../pipeline/tasks.js";
@@ -79,6 +79,35 @@ export function taskRoutes(workflow: WorkflowService, store: ArtifactStore) {
     c.header("Content-Type", CONTENT_TYPES[ext] ?? "application/octet-stream");
     c.header("Content-Length", String(stat.size));
     if (c.req.query("download") === "1") c.header("Content-Disposition", `attachment; filename="${path.basename(row.name)}"`);
+    return c.body(Readable.toWeb(fs.createReadStream(file)) as ReadableStream);
+  });
+
+  /**
+   * Serves the Playwright HTML report as a directory tree rather than a single
+   * Artifact blob. The report links its attachments relatively (`data/x.webm`),
+   * so framing it at the opaque `/artifacts/:artifactId/content` URL makes every
+   * video 404. Mounting it path-for-path under `/report/` means a relative link
+   * from `/report/index.html` resolves to `/report/data/x.webm` and hits us here.
+   *
+   * The trailing `:filePath{.+}` is Hono's wildcard-with-slashes: it captures the
+   * whole remainder of the path, already percent-decoded.
+   */
+  r.get("/:id/test-runs/:testRunId/report/:filePath{.+}", async (c) => {
+    const task = await requireTask(c.req.param("id"));
+    // Scope the lookup by taskId too: a Test Run id alone must not let one Task read another's report.
+    const [run] = await db
+      .select({ id: testRuns.id })
+      .from(testRuns)
+      .where(and(eq(testRuns.id, c.req.param("testRunId")), eq(testRuns.taskId, task.id)))
+      .limit(1);
+    if (!run) throw new HttpError(404, "Test Run not found");
+    // The captured segment is untrusted; resolveWithin throws 403 if it escapes the report directory.
+    const file = store.resolveWithin(store.reportDirPath(task.id, run.id), c.req.param("filePath"));
+    const stat = await fs.promises.stat(file).catch(() => null);
+    if (!stat || !stat.isFile()) throw new HttpError(404, "Report file not found");
+    const ext = path.extname(file).toLowerCase();
+    c.header("Content-Type", CONTENT_TYPES[ext] ?? "application/octet-stream");
+    c.header("Content-Length", String(stat.size));
     return c.body(Readable.toWeb(fs.createReadStream(file)) as ReadableStream);
   });
 

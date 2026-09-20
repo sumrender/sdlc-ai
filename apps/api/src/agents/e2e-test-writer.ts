@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import { e2eSpecDir } from "@sdlc-ai/shared";
 import { db } from "../db/index.js";
 import { tasks } from "../db/schema.js";
 import { AgentOutputError } from "../errors.js";
@@ -31,23 +32,34 @@ export const e2eTestWriterBody: AgentBody = async (ctx) => {
   }
 
   const changedFiles = task.pullRequestNumber ? await deps.github.getChangedFiles(task.pullRequestNumber).catch(() => [] as string[]) : [];
+  // Playwright only runs what lives under `<cwd>/<testDir>`; pointing the agent
+  // at the bare cwd (e.g. "fe") aims it at the whole frontend app, where any
+  // spec it writes is invisible to the suite.
+  const specDir = e2eSpecDir(manifest.e2e) || ".";
   const result = await invokeAgent(ctx, {
     agentName: AGENT_DEFINITIONS.E2E_TEST_WRITER.name,
-    prompt: e2eTestWriterPrompt(task.title, task.description, task.plan, changedFiles, manifest.e2e.cwd, manifest.e2e.command),
+    prompt: e2eTestWriterPrompt(task.title, task.description, task.plan, changedFiles, specDir, manifest.e2e.command),
     timeoutMs: TIMEOUTS.DEVELOPER,
     label: "E2E_TEST_WRITER",
   });
 
-  let specPath = detectSpecPath(result.text) ?? (await newestSpec(sandbox, manifest.e2e.cwd, log));
-  // The writer may report the spec path relative to the e2e cwd; normalize to
-  // repo-relative so `git add -- <path>` (and the stored e2eGeneratedSpecPath)
-  // resolve from the repo root.
-  if (specPath && manifest.e2e.cwd !== ".") {
+  let specPath = detectSpecPath(result.text) ?? (await newestSpec(sandbox, specDir, log));
+  // The writer may report the spec path relative to the spec dir or to the e2e
+  // cwd; normalize to repo-relative so `git add -- <path>` (and the stored
+  // e2eGeneratedSpecPath) resolve from the repo root. Candidates are tried
+  // longest-prefix first so the deepest match wins.
+  if (specPath) {
     const exists = async (p: string) =>
       (await sandbox.exec(`test -f ${shellQuote(p)} && echo SDLC_EXISTS`, { cwd: WORKSPACE })).stdout.includes("SDLC_EXISTS");
     if (!(await exists(specPath))) {
-      const nested = `${manifest.e2e.cwd.replace(/\/+$/, "")}/${specPath}`;
-      if (await exists(nested)) specPath = nested;
+      const bases = [specDir, manifest.e2e.cwd.replace(/\/+$/, "")].filter((b) => b && b !== ".");
+      for (const base of bases) {
+        const nested = `${base}/${specPath}`;
+        if (await exists(nested)) {
+          specPath = nested;
+          break;
+        }
+      }
     }
   }
   // Commit only the detected spec: the reused workspace can hold stray
@@ -61,7 +73,7 @@ export const e2eTestWriterBody: AgentBody = async (ctx) => {
   log(`E2E spec ready: ${resolved}`);
 };
 
-function e2eTestWriterPrompt(title: string, description: string, plan: string | null, changedFiles: string[], cwd: string, command: string): string {
+function e2eTestWriterPrompt(title: string, description: string, plan: string | null, changedFiles: string[], specDir: string, command: string): string {
   return `# Task
 Title: ${title}
 
@@ -74,11 +86,11 @@ ${plan ?? "(no plan recorded)"}
 ${changedFiles.length ? changedFiles.map((f) => `- ${f}`).join("\n") : "- (unknown)"}
 
 # E2E setup
-- Spec directory: ${cwd}
+- Spec directory (repo-relative, this is Playwright's testDir): ${specDir}
 - Suite command: ${command}
 
 # Rules
-- Write exactly one focused Playwright spec under ${cwd} covering the user-visible change above.
+- Write exactly one focused Playwright spec under ${specDir} covering the user-visible change above. A spec written anywhere else is invisible to the suite.
 - Follow the repo's existing spec conventions (imports, fixtures, selectors).
 - Keep titles unique and deterministic. No sleeps, no external network.
 - Do NOT commit or push. End with a line: SPEC_PATH: <relative path of the spec you wrote>.`;
@@ -94,11 +106,12 @@ export function detectSpecPath(text: string): string | null {
 
 // NUL-delimited `git status --porcelain=v1 -z`, parsed in JS instead of awk:
 // unquoted paths, rename-safe, and repo-relative (run from the repo root,
-// scoped to the e2e cwd). Rename entries emit the old path as a bare NUL
-// segment without an XY prefix, which the status-char filter drops.
-async function newestSpec(sandbox: { exec: (cmd: string, opts?: { cwd?: string }) => Promise<{ stdout: string }> }, cwd: string, log: (l: string) => void): Promise<string | null> {
+// scoped to the resolved spec dir so a stray unit spec elsewhere in the app
+// cannot be mistaken for the writer's output). Rename entries emit the old
+// path as a bare NUL segment without an XY prefix, which the filter drops.
+async function newestSpec(sandbox: { exec: (cmd: string, opts?: { cwd?: string }) => Promise<{ stdout: string }> }, specDir: string, log: (l: string) => void): Promise<string | null> {
   try {
-    const found = await sandbox.exec(`git status --porcelain=v1 -z -- ${shellQuote(cwd)}`, { cwd: WORKSPACE });
+    const found = await sandbox.exec(`git status --porcelain=v1 -z -- ${shellQuote(specDir)}`, { cwd: WORKSPACE });
     const spec = found.stdout
       .split("\0")
       .filter((entry) => /^[A-Z?! ]{2} /.test(entry))

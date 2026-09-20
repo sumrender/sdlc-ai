@@ -15,38 +15,31 @@ export interface E2EReportInput {
   generatedSpecPath: string | null;
 }
 
-export function buildE2EComment(input: E2EReportInput & { taskUrl: string; videoUrl: string | null }): string {
-  const { task, run, generatedSpecPath, taskUrl, videoUrl } = input;
+// Videos live in the control plane, not on GitHub: one line for all of them,
+// pointing at the task page that can actually stream them.
+function videoLine(videoCount: number, taskUrl: string): string {
+  if (videoCount <= 0) return "";
+  return `\n- 🎬 ${videoCount} test video${videoCount === 1 ? "" : "s"} — [watch in the control plane](${taskUrl})`;
+}
+
+export function buildE2EComment(input: E2EReportInput & { taskUrl: string; videoCount: number }): string {
+  const { task, run, generatedSpecPath, taskUrl, videoCount } = input;
   const passed = run.status === "COMPLETED" && run.exitCode === 0;
   const headline = passed ? "✅ E2E passed" : "❌ E2E failed";
   const counts = run.passed != null ? `${run.passed} passed, ${run.failed ?? 0} failed${run.skipped ? `, ${run.skipped} skipped` : ""}` : "n/a";
   const specLine = generatedSpecPath ? `\n- New test added by E2E: \`${generatedSpecPath}\`` : "";
-  const videoLine = videoUrl ? `\n- 🎬 [Watch the test video](${videoUrl})` : "";
-  return `${E2E_MARKER}\n### ${headline} — ${counts}\n\n- Task: ${task.title}\n- Control plane: ${taskUrl}${specLine}${videoLine}\n\n_Test Run ${run.id.slice(0, 8)} · attempt ${run.attempt} · exit ${run.exitCode ?? "n/a"}_`;
+  return `${E2E_MARKER}\n### ${headline} — ${counts}\n\n- Task: ${task.title}\n- Control plane: ${taskUrl}${specLine}${videoLine(videoCount, taskUrl)}\n\n_Test Run ${run.id.slice(0, 8)} · attempt ${run.attempt} · exit ${run.exitCode ?? "n/a"}_`;
 }
 
 function taskUrl(taskId: string): string {
   return `${env.CONTROL_PLANE_URL}/tasks/${taskId}`;
 }
 
-// Uploads the first VIDEO artifact of the run to GitHub; null when there is
-// none or the upload fails (caller falls back to no video link + a warning).
-async function githubVideoUrl(deps: Deps, taskId: string, testRunId: string, log: (l: string) => void): Promise<string | null> {
+// How many VIDEO artifacts this run produced. Videos are served by the control
+// plane (they are already stored as artifacts); nothing is uploaded anywhere.
+async function videoArtifactCount(testRunId: string): Promise<number> {
   const rows = await db.select().from(artifacts).where(eq(artifacts.testRunId, testRunId));
-  const video = rows.find((r) => r.type === "VIDEO");
-  if (!video) return null;
-  try {
-    const abs = deps.artifacts.resolvePath(video);
-    const { readFile } = await import("node:fs/promises");
-    const data = await readFile(abs);
-    const ext = video.name.toLowerCase().endsWith(".webm") ? "video/webm" : "video/mp4";
-    const base = video.name.split("/").pop() ?? "e2e-video.mp4";
-    const uploaded = await deps.github.uploadVideoAsset(`${taskId.slice(0, 8)}-${base}`, data, ext);
-    return uploaded.url;
-  } catch (e) {
-    log(`Video upload to GitHub failed; PR will link no video: ${(e as Error).message}`);
-    return null;
-  }
+  return rows.filter((r) => r.type === "VIDEO").length;
 }
 
 // Posts/updates the marker comment and refreshes the PR body section after
@@ -55,8 +48,11 @@ export async function postE2EReport(deps: Deps, input: E2EReportInput, log: (l: 
   const { task, run, generatedSpecPath } = input;
   if (!task.pullRequestNumber) throw new Error("Cannot post E2E report: task has no PR");
   const url = taskUrl(task.id);
-  const videoUrl = await githubVideoUrl(deps, task.id, run.id, log);
-  const body = buildE2EComment({ task, run, generatedSpecPath, taskUrl: url, videoUrl });
+  const videoCount = await videoArtifactCount(run.id);
+  // `e2eReportVideoUrl` used to hold a GitHub release asset; it now holds the
+  // control-plane task URL (or null), which is where the videos actually are.
+  const videoUrl = videoCount > 0 ? url : null;
+  const body = buildE2EComment({ task, run, generatedSpecPath, taskUrl: url, videoCount });
 
   const comments = await deps.github.listComments(task.pullRequestNumber);
   const ours = comments.find((c) => c.body.includes(E2E_MARKER));
@@ -71,7 +67,7 @@ export async function postE2EReport(deps: Deps, input: E2EReportInput, log: (l: 
     log(`Posted E2E PR comment: ${created.url}`);
   }
 
-  await refreshPrBody(deps, task.pullRequestNumber, run, generatedSpecPath, videoUrl, url, log);
+  await refreshPrBody(deps, task.pullRequestNumber, run, generatedSpecPath, videoCount, url, log);
   await db
     .update(tasks)
     .set({ e2eReportCommentUrl: commentUrl, e2eReportVideoUrl: videoUrl, updatedAt: new Date() })
@@ -85,7 +81,7 @@ async function refreshPrBody(
   pullNumber: number,
   run: TestRunRow,
   generatedSpecPath: string | null,
-  videoUrl: string | null,
+  videoCount: number,
   url: string,
   log: (l: string) => void,
 ): Promise<void> {
@@ -94,7 +90,7 @@ async function refreshPrBody(
     `${BODY_SECTION_START}\n## Latest E2E\n` +
     `- ${run.status === "COMPLETED" && run.exitCode === 0 ? "✅ passed" : "❌ failed"}: ${run.passed != null ? `${run.passed} passed, ${run.failed ?? 0} failed` : "n/a"} (attempt ${run.attempt})\n` +
     (generatedSpecPath ? `- New test: \`${generatedSpecPath}\`\n` : "") +
-    (videoUrl ? `- 🎬 [Watch the test video](${videoUrl})\n` : "") +
+    (videoCount > 0 ? `- 🎬 ${videoCount} test video${videoCount === 1 ? "" : "s"} — [watch in the control plane](${url})\n` : "") +
     `- [Open in control plane](${url})\n${BODY_SECTION_END}`;
   const next = current.includes(BODY_SECTION_START)
     ? current.replace(new RegExp(`${BODY_SECTION_START}[\\s\\S]*?${BODY_SECTION_END}`), section)

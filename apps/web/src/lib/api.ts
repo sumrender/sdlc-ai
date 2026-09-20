@@ -52,6 +52,12 @@ export interface ApiClient {
   fetchArtifactText(taskId: string, artifactId: string): Promise<string>;
   /** Absolute URL that streams an Artifact's bytes; used for images, reports, and downloads. */
   artifactContentUrl(taskId: string, artifactId: string): string;
+  /**
+   * Absolute URL of one file inside a Test Run's Playwright report directory.
+   * Unlike `artifactContentUrl` this keeps the report's own directory shape, so
+   * the relative `data/*.webm` attachment links inside the report HTML resolve.
+   */
+  testRunReportUrl(taskId: string, testRunId: string, filePath: string): string;
   /** Absolute URL of the SSE endpoint; scoped to one Task when `taskId` is given. */
   eventsUrl(taskId?: string): string;
 }
@@ -106,8 +112,23 @@ export function createApiClient({ origin, fetch = globalThis.fetch }: ApiClientO
       return res.text();
     },
     artifactContentUrl: (taskId, artifactId) => `${origin}${API_PATHS.artifactContent(taskId, artifactId)}`,
+    testRunReportUrl: (taskId, testRunId, filePath) => `${origin}${testRunReportPath(taskId, testRunId, filePath)}`,
     eventsUrl: (taskId) => `${origin}${API_PATHS.events}${taskId ? `?taskId=${encodeURIComponent(taskId)}` : ""}`,
   };
+}
+
+/**
+ * Path of the Test Run report route. Not in the shared `API_PATHS` table because
+ * the trailing segment is a whole sub-path, not one id: each segment is encoded
+ * individually so the `/` separators survive into the server's wildcard capture.
+ */
+function testRunReportPath(taskId: string, testRunId: string, filePath: string): string {
+  const encoded = filePath
+    .split("/")
+    .filter((s) => s.length > 0)
+    .map(encodeURIComponent)
+    .join("/");
+  return `/tasks/${encodeURIComponent(taskId)}/test-runs/${encodeURIComponent(testRunId)}/report/${encoded}`;
 }
 
 async function toRequestError(res: Response, path: string): Promise<ApiRequestError> {

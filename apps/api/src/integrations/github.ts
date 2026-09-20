@@ -142,36 +142,6 @@ export class OctokitGitHubService implements GitHubService {
     await this.octokit.rest.pulls.update({ ...this.base, pull_number: pullNumber, body });
   }
 
-  // Release-asset upload under a rolling `sdlc-e2e-assets` release, so the PR
-  // links a GitHub-hosted viewable file instead of a bearer-free control-plane URL.
-  async uploadVideoAsset(fileName: string, data: Uint8Array, contentType: string) {
-    const tag = "sdlc-e2e-assets";
-    let releaseId: number;
-    try {
-      const { data: release } = await this.octokit.rest.repos.getReleaseByTag({ ...this.base, tag });
-      releaseId = release.id;
-    } catch (e) {
-      if ((e as { status?: number }).status !== 404) throw e;
-      const { data: created } = await this.octokit.rest.repos.createRelease({
-        ...this.base,
-        tag_name: tag,
-        name: "SDLC E2E assets",
-        body: "Playwright videos uploaded by the SDLC control plane for PR E2E reports.",
-      });
-      releaseId = created.id;
-    }
-    const unique = `${Date.now()}-${fileName}`;
-    const { data: asset } = await this.octokit.rest.repos.uploadReleaseAsset({
-      ...this.base,
-      release_id: releaseId,
-      name: unique,
-      // Octokit types data as string; Buffer is accepted at runtime.
-      data: Buffer.from(data) as unknown as string,
-      headers: { "content-type": contentType, "content-length": data.byteLength },
-    } as never);
-    return { url: asset.browser_download_url, name: unique };
-  }
-
   async connectionStatus() {
     try {
       const { data } = await this.octokit.rest.users.getAuthenticated();

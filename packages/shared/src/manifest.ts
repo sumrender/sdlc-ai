@@ -41,12 +41,39 @@ export type StackManifest = z.infer<typeof StackManifestSchema>;
 export const E2eSchema = z.object({
   command: z.string().min(1),
   cwd: z.string().default("."),
+  /**
+   * Playwright's `testDir`, relative to `cwd`. Only specs under
+   * `<cwd>/<testDir>` are visible to the suite, so this is what decides whether
+   * a diff's test file is real e2e coverage or just a co-located unit test.
+   * Defaults to Playwright's own convention so existing manifests keep working.
+   */
+  testDir: z.string().default("e2e"),
   env: z.record(z.string()).default({}),
   artifacts: z.array(z.string()).default([]),
   /** When true, e2e may be skipped without failing the task. */
   optional: z.boolean().default(false),
 });
 export type E2eConfig = z.infer<typeof E2eSchema>;
+
+/**
+ * Strips a leading "./" or "/" and any trailing slashes; a bare "." becomes
+ * empty. Manifests are hand-written, so "fe", "./fe", "/fe" and "fe/" all mean
+ * the same repo-relative directory.
+ */
+function normalizePathSegment(segment: string): string {
+  const trimmed = segment.trim().replace(/^(?:\.?\/)+/, "").replace(/\/+$/, "");
+  return trimmed === "." ? "" : trimmed;
+}
+
+/**
+ * Repo-relative directory Playwright actually scans for specs: `<cwd>/<testDir>`,
+ * collapsing to just `<testDir>` when cwd is the repo root. Anything outside it
+ * is invisible to the suite, so this is the one path that decides both where the
+ * writer puts a spec and what counts as existing coverage.
+ */
+export function e2eSpecDir(e2e: Pick<E2eConfig, "cwd" | "testDir">): string {
+  return [normalizePathSegment(e2e.cwd), normalizePathSegment(e2e.testDir)].filter(Boolean).join("/");
+}
 
 export const ProjectManifestSchema = z.object({
   version: z.number().int().optional(),

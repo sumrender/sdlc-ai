@@ -20,7 +20,7 @@
     "paths": ["apps/api/**"],
     "setup": [],
     "checks": ["pnpm --filter @sdlc-ai/api build"],
-    "unitTests": null,
+    "unitTests": { "command": "pnpm --filter @sdlc-ai/api test", "cwd": ".", "env": {}, "optional": false },
     "integrations": [
       {
         "name": "PostgreSQL + Drizzle",

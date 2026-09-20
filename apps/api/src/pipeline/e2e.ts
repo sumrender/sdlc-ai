@@ -77,7 +77,7 @@ async function execute(deps: Deps, run: TestRunRow): Promise<void> {
       const forced = await forceVideoOn(sandbox, e2e, cwd, log);
       cleanupOverlay = forced.cleanup;
       const command = forced.command;
-      const env = { ...e2e.env, PLAYWRIGHT_VIDEO: "on" };
+      const env = { ...e2e.env };
       log(`$ ${command}  (cwd ${cwd})`);
       const started = Date.now();
       const result = await sandbox.exec(command, {
@@ -235,9 +235,13 @@ export interface ForcedVideo {
   cleanup: (() => Promise<void>) | null;
 }
 
-// Probes for a Playwright config without a video setting and, when found,
-// writes a temporary overlay config extending it with video/screenshot on.
-// Non-Playwright commands or any probe failure → env-only fallback (logged).
+// Probes for the project's Playwright config and, when found, writes a
+// temporary overlay config extending it with video/screenshot on. The overlay
+// spreads its own `use` last, so the override is deliberate and unconditional:
+// a project that declares `video: 'off'` (or 'retain-on-failure') must not be
+// able to opt out of the recording the control plane reports on. Only a
+// non-Playwright command, a command that already pins its own `--config`, or a
+// failed probe leaves the command untouched — each says so in the log.
 //
 // The overlay MUST sit beside the config it extends: Playwright resolves
 // `testDir`, `outputDir`, reporter folders and `webServer.cwd` against the
@@ -247,19 +251,21 @@ export interface ForcedVideo {
 export async function forceVideoOn(sandbox: Sandbox, e2e: E2eConfig, cwd: string, log: (line: string) => void): Promise<ForcedVideo> {
   const fallback: ForcedVideo = { command: e2e.command, videoDir: videoDirFor(e2e), cleanup: null };
   if (!isPlaywrightCommand(e2e.command)) {
-    log("Non-Playwright e2e command; video forced via env only");
+    log("Non-Playwright e2e command; video could not be forced on");
     return fallback;
   }
-  if (e2e.command.includes("--config")) return fallback;
+  if (e2e.command.includes("--config")) {
+    // A second --config would shadow ours; the command owns its config.
+    log("E2E command pins its own --config; video could not be forced on");
+    return fallback;
+  }
   try {
     const ls = await sandbox.exec(`ls playwright.config.* 2>/dev/null || ls config/playwright.* 2>/dev/null || true`, { cwd });
     const configFile = ls.stdout.split("\n").map((s) => s.trim()).find(Boolean);
     if (!configFile) {
-      log("No playwright config found; video forced via env only");
+      log("No playwright config found; video could not be forced on");
       return fallback;
     }
-    const content = await sandbox.exec(`cat ${configFile}`, { cwd });
-    if (/video\s*:/.test(content.stdout)) return fallback;
 
     const configDir = posixDirname(`${cwd}/${configFile}`);
     const overlayPath = `${configDir}/${OVERLAY_BASENAME}`;
@@ -267,7 +273,7 @@ export async function forceVideoOn(sandbox: Sandbox, e2e: E2eConfig, cwd: string
       `// Temporary SDLC overlay: extends the project config with video on. Never committed.\n` +
       `import base from './${posixBasename(configFile)}';\n` +
       `const b = (base as any)?.default ?? base as any;\n` +
-      `export default { ...b, use: { ...(b?.use ?? {}), video: 'retain-on-failure', screenshot: 'only-on-failure' } };\n`;
+      `export default { ...b, use: { ...(b?.use ?? {}), video: 'on', screenshot: 'only-on-failure' } };\n`;
     await sandbox.writeFile(overlayPath, overlay);
     await excludeFromGit(sandbox, overlayPath);
     log(`Forcing Playwright video via overlay config ${overlayPath} (extends ${configFile})`);
@@ -279,7 +285,7 @@ export async function forceVideoOn(sandbox: Sandbox, e2e: E2eConfig, cwd: string
       },
     };
   } catch (e) {
-    log(`Video overlay probe failed; falling back to env injection: ${errorMessage(e)}`);
+    log(`Video overlay probe failed; running the suite unmodified, video could not be forced on: ${errorMessage(e)}`);
     return fallback;
   }
 }
