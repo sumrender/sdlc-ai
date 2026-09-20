@@ -33,8 +33,8 @@ docker run -d --rm --name "$NAME" \
   -v sdlc-ai-opencode:/root/.local/share/opencode \
   -w /workspace "$IMAGE" sleep infinity >/dev/null
 
-echo "==> toolchain"
-docker exec "$NAME" bash -c 'git --version && node --version && dotnet --version && opencode --version'
+echo "==> toolchain (image provides git/node/pnpm/opencode only; other runtimes come from the manifest setup)"
+docker exec "$NAME" bash -c 'git --version && node --version && pnpm --version && opencode --version'
 
 echo "==> cloning $REPO"
 if [ -n "${GITHUB_TOKEN:-}" ]; then

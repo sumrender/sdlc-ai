@@ -17,5 +17,7 @@ export const TIMEOUTS = {
   TEST_RUN: 10 * 60_000,
   REVIEWER: 5 * 60_000,
   DEPLOYMENT: 15 * 60_000,
-  WORKSPACE: 10 * 60_000,
+  // Workspace setup now includes manifest-owned toolchain installs (e.g. dotnet
+  // via apt on a cold container), so the budget covers apt + project deps.
+  WORKSPACE: 20 * 60_000,
 } as const;
