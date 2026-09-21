@@ -206,6 +206,11 @@ export class ArtifactStore {
     return abs;
   }
 
+  /** Removes one Task's whole artifact directory (logs, test-run trees, reports). */
+  async clearTask(taskId: string): Promise<void> {
+    await fs.rm(this.taskDir(taskId), { recursive: true, force: true });
+  }
+
   async clear(): Promise<void> {
     await fs.rm(this.root, { recursive: true, force: true });
   }

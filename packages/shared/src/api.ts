@@ -22,6 +22,25 @@ export const DecideApprovalInputSchema = z.discriminatedUnion("decision", [
 ]);
 export type DecideApprovalInput = z.infer<typeof DecideApprovalInputSchema>;
 
+/**
+ * Body of DELETE /tasks/:id. Deleting a Task also stops it when runs are live;
+ * these flags additionally close the Task's GitHub issue and/or pull request.
+ */
+export const DeleteTaskInputSchema = z.object({
+  closeIssue: z.boolean().optional(),
+  closePullRequest: z.boolean().optional(),
+});
+export type DeleteTaskInput = z.infer<typeof DeleteTaskInputSchema>;
+
+/** Response of DELETE /tasks/:id: the removed Task plus how much GitHub cleanup happened. */
+export const DeleteTaskResultSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  issuesClosed: z.number().int(),
+  pullRequestsClosed: z.number().int(),
+});
+export type DeleteTaskResult = z.infer<typeof DeleteTaskResultSchema>;
+
 export const DEMO_TASK = {
   title: "Show the template count in the gallery header",
   description:
@@ -70,6 +89,8 @@ export const API_PATHS = {
   retryTask: (taskId: string) => `/tasks/${taskId}/retry`,
   retryWithNewBranchTask: (taskId: string) => `/tasks/${taskId}/retry-with-new-branch`,
   sendBackTask: (taskId: string) => `/tasks/${taskId}/send-back`,
+  stopTask: (taskId: string) => `/tasks/${taskId}/stop`,
+  deleteTask: (taskId: string) => `/tasks/${taskId}`,
   answerQuestion: (taskId: string, questionId: string) => `/tasks/${taskId}/questions/${questionId}/answer`,
   decideApproval: (taskId: string, approvalId: string) => `/tasks/${taskId}/approvals/${approvalId}/decide`,
   artifacts: (taskId: string) => `/tasks/${taskId}/artifacts`,

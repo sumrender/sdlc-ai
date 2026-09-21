@@ -23,6 +23,7 @@ const LABEL: Record<EventType, string> = {
   DEPLOYMENT_UPDATED: "Deployment updated",
   TASK_FAILED: "Task failed",
   TASK_RETRIED: "Task retried",
+  TASK_DELETED: "Task deleted",
   E2E_COVERAGE_DECIDED: "E2E coverage decided",
   PR_COMMENT_POSTED: "E2E report posted",
 };

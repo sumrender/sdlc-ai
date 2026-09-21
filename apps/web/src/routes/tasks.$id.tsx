@@ -2,6 +2,7 @@ import { useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { ArrowLeft, FileDiff, MessageCircleQuestion } from "lucide-react";
 import { type Artifact, type TaskDetail } from "@sdlc-ai/shared";
+import { ApiRequestError } from "~/lib/api";
 import { AgentActivity, runLabel } from "~/components/AgentActivity";
 import { ApprovalPanel, DecidedApproval } from "~/components/ApprovalPanel";
 import { ArtifactViewer } from "~/components/ArtifactViewer";
@@ -35,11 +36,17 @@ function TaskDetailPage() {
 
   if (query.isPending) return <p className="p-6 text-sm text-muted-foreground">Loading Task…</p>;
   if (query.isError) {
+    const deleted = query.error instanceof ApiRequestError && query.error.status === 404;
     return (
       <div className="p-6">
         <p role="alert" className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-          Could not load the Task: {query.error.message}
+          {deleted ? "This Task has been deleted." : `Could not load the Task: ${query.error.message}`}
         </p>
+        {deleted && (
+          <Link to="/" className="mt-3 inline-flex items-center gap-1 text-sm text-blue-700 hover:underline">
+            <ArrowLeft className="h-3.5 w-3.5" aria-hidden /> Back to the board
+          </Link>
+        )}
       </div>
     );
   }

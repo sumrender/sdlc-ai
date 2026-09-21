@@ -8,6 +8,10 @@ import type { Sandbox, SandboxCreateOptions, SandboxRunner } from "../ports.js";
  */
 export class TaskSandboxPool implements SandboxRunner {
   private readonly shared = new Map<string, { sandbox: Sandbox; lastUsedAt: number }>();
+  // Sandboxes a Task owns outright (reuseSandbox off, or a per-run container).
+  // The pool is the only place that knows all of a Task's live containers, so
+  // Stop/Delete can destroy them even though their run started them.
+  private readonly owned = new Map<string, Set<Sandbox>>();
   // Serialize all operations that touch /workspace for a given taskId.
   // Parallel reviewers otherwise race on git fetch/checkout/reset + .opencode writes
   // inside the same container.
@@ -17,6 +21,24 @@ export class TaskSandboxPool implements SandboxRunner {
 
   async create(options: SandboxCreateOptions): Promise<Sandbox> {
     return this.inner.create(options);
+  }
+
+  /**
+   * Registers a non-shared Sandbox under its Task so `destroyTask` can reach
+   * it. Returns a release function the caller runs when the run finishes and
+   * destroys (or abandons) the container itself.
+   */
+  registerOwned(taskId: string, sandbox: Sandbox): () => void {
+    let set = this.owned.get(taskId);
+    if (!set) {
+      set = new Set();
+      this.owned.set(taskId, set);
+    }
+    set.add(sandbox);
+    return () => {
+      set!.delete(sandbox);
+      if (set!.size === 0) this.owned.delete(taskId);
+    };
   }
 
   sharedName(taskId: string): string {
@@ -54,16 +76,23 @@ export class TaskSandboxPool implements SandboxRunner {
     }
   }
 
+  /** Destroys every container the Task holds: the shared reuse container and any owned per-run ones. */
   async destroyTask(taskId: string): Promise<void> {
     const entry = this.shared.get(taskId);
-    if (!entry) return;
     this.shared.delete(taskId);
-    await entry.sandbox.destroy().catch(() => undefined);
+    const owned = [...(this.owned.get(taskId) ?? [])];
+    this.owned.delete(taskId);
+    await Promise.all([
+      entry ? entry.sandbox.destroy().catch(() => undefined) : Promise.resolve(),
+      ...owned.map((s) => s.destroy().catch(() => undefined)),
+    ]);
   }
 
   async clear(): Promise<void> {
     const entries = [...this.shared.entries()];
+    const owned = [...this.owned.values()].flatMap((set) => [...set]);
     this.shared.clear();
-    await Promise.all(entries.map(([, e]) => e.sandbox.destroy().catch(() => undefined)));
+    this.owned.clear();
+    await Promise.all([...entries.map(([, e]) => e.sandbox.destroy().catch(() => undefined)), ...owned.map((s) => s.destroy().catch(() => undefined))]);
   }
 }

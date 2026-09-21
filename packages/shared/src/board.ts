@@ -113,3 +113,13 @@ export const PRCommentPostedPayloadSchema = z.object({
   testRunId: z.string().nullable().optional(),
 });
 export type PRCommentPostedPayload = z.infer<typeof PRCommentPostedPayloadSchema>;
+
+/**
+ * Payload of TASK_DELETED. The Event row itself is cascade-deleted with the
+ * Task, so this Event can only reach clients live over SSE (a client that
+ * reconnects afterwards simply refetches a list without the Task).
+ */
+export const TaskDeletedPayloadSchema = z.object({
+  title: z.string().optional(),
+});
+export type TaskDeletedPayload = z.infer<typeof TaskDeletedPayloadSchema>;

@@ -13,6 +13,36 @@ export function retryAvailability(task: Pick<Task, "stage" | "status">): ActionA
 }
 
 /**
+ * Stop cancels every live Agent Run and Test Run of a RUNNING Task and parks it
+ * in FAILED with "Stopped by operator". The existing Retry then restarts the
+ * Stage from scratch — the gates ignore CANCELLED runs and launch fresh ones.
+ * Shared so the API's refusal and the detail page's Stop button apply the same
+ * rule.
+ */
+export function stopAvailability(task: Pick<Task, "status">): ActionAvailability {
+  if (task.status !== "RUNNING") return { allowed: false, reason: "Only a RUNNING Task can be stopped." };
+  return { allowed: true };
+}
+
+/**
+ * Delete removes the Task and every row that hangs off it, after stopping any
+ * live runs first (delete implies stop). Optional flags let the operator close
+ * the GitHub issue and/or the pull request as part of the deletion — but a PR
+ * that was already merged must never be closed. Shared so the API's refusal and
+ * the delete dialog's checkboxes apply the same rule.
+ */
+export type ClosableRefs = Pick<Task, "issueNumber" | "pullRequestNumber" | "mergedCommitSha">;
+
+export function closableIssue(task: ClosableRefs): boolean {
+  return task.issueNumber != null;
+}
+
+/** A merged PR is already closed on GitHub; offering the checkbox would lie. */
+export function closablePullRequest(task: ClosableRefs): boolean {
+  return task.pullRequestNumber != null && !task.mergedCommitSha;
+}
+
+/**
  * Send back to Development is the operator's recovery for a Task that FAILED in
  * E2E once its automatic Reject loop is spent: a new Developer run gets the
  * failure output as feedback instead of the Task staying parked.

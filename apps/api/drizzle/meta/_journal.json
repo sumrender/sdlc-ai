@@ -50,6 +50,13 @@
       "when": 1789950000000,
       "tag": "0006_unique_task_refs",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1789990000000,
+      "tag": "0007_task_deleted_event",
+      "breakpoints": true
     }
   ]
 }

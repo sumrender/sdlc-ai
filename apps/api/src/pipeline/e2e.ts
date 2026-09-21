@@ -69,7 +69,14 @@ async function execute(deps: Deps, run: TestRunRow): Promise<void> {
         await prepareWorkspaceReuse(sandbox, deps.github, { ref: task.branchName, manifest, agents: [], log });
       } else {
         sandbox = await deps.sandboxes.create({ name: `sdlc-e2e-${run.id.slice(0, 8)}-a${run.attempt}` });
-        await prepareWorkspace(sandbox, deps.github, { ref: task.branchName, manifest, agents: [], log });
+        // Register so Stop/Delete can destroy this container mid-run.
+        const poolForOwned = deps.sandboxes instanceof TaskSandboxPool ? deps.sandboxes : null;
+        const releaseOwned = poolForOwned?.registerOwned(task.id, sandbox) ?? null;
+        try {
+          await prepareWorkspace(sandbox, deps.github, { ref: task.branchName, manifest, agents: [], log });
+        } finally {
+          releaseOwned?.();
+        }
       }
 
       const e2e = manifest.e2e;
@@ -136,6 +143,13 @@ async function execute(deps: Deps, run: TestRunRow): Promise<void> {
       .saveLog({ taskId: run.taskId, testRunId: run.id, name: `e2e-attempt-${run.attempt}.log`, content: lines.join("\n") })
       .catch((e) => console.error("[e2e] failed to save log artifact", e));
   }
+
+  // Stop/Delete marks the row CANCELLED while the suite runs. Keep the log
+  // artifact saved above, but write nothing else: a cancelled run keeps its
+  // CANCELLED status and gets no PR report, no retry, and no failTask/advance
+  // (whoever cancelled it owns the Task's outcome from here).
+  const [current] = await db.select({ status: testRuns.status }).from(testRuns).where(eq(testRuns.id, run.id)).limit(1);
+  if (current?.status === "CANCELLED") return;
 
   await db
     .update(testRuns)

@@ -12,7 +12,9 @@ import {
   retryAvailability,
   scopedReviewers,
   sendBackAvailability,
+  stopAvailability,
   type CreateTaskInput,
+  type DeleteTaskInput,
   type DecideApprovalInput,
   type ResetDemoResult,
   type Reviewer,
@@ -65,6 +67,14 @@ import {
 
 const MAX_STEPS_PER_ADVANCE = 10;
 const BRANCH_PREFIX = "sdlc/";
+
+/** What DELETE /tasks/:id reports back: the removed Task and any GitHub closes. */
+export interface DeleteTaskResult {
+  id: string;
+  title: string;
+  issuesClosed: number;
+  pullRequestsClosed: number;
+}
 
 export class WorkflowService {
   readonly deps: Deps;
@@ -538,6 +548,90 @@ export class WorkflowService {
     await transition(task, "DEVELOPMENT", "RUNNING");
     await this.advance(taskId);
     return requireTask(taskId);
+  }
+
+  /**
+   * Operator stop: cancel every live Agent Run and Test Run, destroy the
+   * Task's Sandboxes, and park the Task in FAILED. In-flight run bodies notice
+   * the CANCELLED rows before writing their outcome (see runner.ts / e2e.ts)
+   * and bow out without overwriting it, retrying, or advancing. Because the
+   * gates ignore CANCELLED runs, Retry afterwards restarts the Stage cleanly.
+   */
+  async stop(taskId: string): Promise<TaskRow> {
+    const task = await requireTask(taskId);
+    const stoppable = stopAvailability(task);
+    if (!stoppable.allowed) throw new HttpError(409, stoppable.reason);
+    await this.cancelActiveRuns(taskId, "Stopped by operator");
+    // failTask emits TASK_STATUS_CHANGED and TASK_FAILED; the runner and e2e
+    // executors see CANCELLED rows and leave the outcome alone.
+    await failTask(taskId, "Stopped by operator");
+    return requireTask(taskId);
+  }
+
+  /**
+   * Cancel every QUEUED/RUNNING Agent Run and Test Run of the Task, then
+   * destroy all its Sandboxes (the shared reuse container and any owned
+   * per-run ones). The run executors observe the CANCELLED rows when their
+   * bodies finish, so their own bookkeeping stays out of the way.
+   */
+  private async cancelActiveRuns(taskId: string, reason: string): Promise<void> {
+    const cancelled = { status: "CANCELLED" as const, completedAt: new Date(), error: reason };
+    const agentCancel = db
+      .update(agentRuns)
+      .set(cancelled)
+      .where(and(eq(agentRuns.taskId, taskId), inArray(agentRuns.status, ["QUEUED", "RUNNING"])));
+    const testCancel = db
+      .update(testRuns)
+      .set(cancelled)
+      .where(and(eq(testRuns.taskId, taskId), inArray(testRuns.status, ["QUEUED", "RUNNING"])));
+    await Promise.all([agentCancel, testCancel]);
+    await this.destroySharedSandbox(taskId);
+  }
+
+  /**
+   * Operator delete: stop the Task first (delete implies stop), optionally
+   * close its GitHub issue and/or PR, then remove every row and Artifact.
+   * All child tables cascade off tasks (agent_runs, test_runs, questions,
+   * reviews, approvals, deployments, artifacts, events), so one delete covers
+   * them; only the Artifact bytes on disk need separate cleanup.
+   */
+  async deleteTask(taskId: string, input: DeleteTaskInput): Promise<DeleteTaskResult> {
+    const task = await requireTask(taskId);
+
+    // 1. Stop: cancel live runs and free the containers even when the Task is
+    // not RUNNING — a FAILED Task can still hold a sandbox, and a Task that is
+    // WAITING on a Question/Approval must release it too. When the Task is
+    // RUNNING, failTask parks it FAILED first ("Stopped by operator") so the
+    // advance chain halts cleanly while runs notice their CANCELLED rows.
+    if (task.status === "RUNNING") await failTask(taskId, "Stopped by operator");
+    await this.cancelActiveRuns(taskId, "Task deleted");
+
+    // 2. GitHub cleanup, each best-effort like resetDemo: one rejection must
+    // not leave the rows and Artifacts on disk.
+    let issuesClosed = 0;
+    let pullRequestsClosed = 0;
+    if (input.closePullRequest && task.pullRequestNumber && !task.mergedCommitSha) {
+      await this.deps.github
+        .closePullRequest(task.pullRequestNumber)
+        .then(() => pullRequestsClosed++)
+        .catch((e) => console.warn(`[workflow] failed to close PR #${task.pullRequestNumber}:`, errorMessage(e)));
+    }
+    if (input.closeIssue && task.issueNumber) {
+      await this.deps.github
+        .closeIssue(task.issueNumber)
+        .then(() => issuesClosed++)
+        .catch((e) => console.warn(`[workflow] failed to close issue #${task.issueNumber}:`, errorMessage(e)));
+    }
+
+    // 3. Remove everything. TASK_DELETED goes out before the delete: bus.emit
+    // persists an Event row, and after the delete the FK would reject it. The
+    // row is cascade-deleted moments later anyway — live SSE clients receive
+    // the broadcast and drop the Task; refetching clients just see it gone.
+    await bus.emit(taskId, "TASK_DELETED", { title: task.title });
+    await db.delete(tasks).where(eq(tasks.id, taskId));
+    await this.deps.artifacts.clearTask(taskId);
+    this.chains.delete(taskId);
+    return { id: task.id, title: task.title, issuesClosed, pullRequestsClosed };
   }
 
   async answerQuestion(taskId: string, questionId: string, answer: string): Promise<TaskRow> {

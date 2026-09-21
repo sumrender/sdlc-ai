@@ -54,6 +54,13 @@ export function useTaskLive(taskId: string): TaskLive {
         return;
       }
       if (message.event.taskId !== taskId) return;
+      // The Task itself is gone: drop the cache so the page shows its
+      // not-found state. The Event row is cascade-deleted server-side, so no
+      // refetch could ever rebuild anything here.
+      if (message.event.type === "TASK_DELETED") {
+        queryClient.removeQueries({ queryKey: key });
+        return;
+      }
       const current = queryClient.getQueryData<TaskDetail>(key);
       if (!current) return reconcile();
       const { detail, reconcile: stale } = applyEventToDetail(current, message.event);

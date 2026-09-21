@@ -3,7 +3,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { and, asc, eq } from "drizzle-orm";
 import { Hono } from "hono";
-import { AnswerQuestionInputSchema, CreateTaskInputSchema, DecideApprovalInputSchema } from "@sdlc-ai/shared";
+import { AnswerQuestionInputSchema, CreateTaskInputSchema, DecideApprovalInputSchema, DeleteTaskInputSchema } from "@sdlc-ai/shared";
 import { CONTENT_TYPES, type ArtifactStore } from "../artifacts/store.js";
 import { db } from "../db/index.js";
 import { artifacts, testRuns } from "../db/schema.js";
@@ -41,6 +41,20 @@ export function taskRoutes(workflow: WorkflowService, store: ArtifactStore) {
   r.post("/:id/send-back", async (c) => {
     await workflow.sendBackToDevelopment(c.req.param("id"));
     return c.json(await workflow.taskDetail(c.req.param("id")));
+  });
+
+  // Operator stop: cancels live runs, frees Sandboxes, parks the Task FAILED.
+  r.post("/:id/stop", async (c) => {
+    await workflow.stop(c.req.param("id"));
+    return c.json(await workflow.taskDetail(c.req.param("id")));
+  });
+
+  // Operator delete: stops first (delete implies stop), optionally closes the
+  // GitHub issue/PR, then removes the Task and everything hanging off it.
+  r.delete("/:id", async (c) => {
+    const input = await parseBody(c.req.raw, DeleteTaskInputSchema);
+    const result = await workflow.deleteTask(c.req.param("id"), input);
+    return c.json(result);
   });
 
   r.post("/:id/questions/:questionId/answer", async (c) => {

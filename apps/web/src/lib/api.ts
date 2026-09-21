@@ -3,6 +3,7 @@ import {
   ApiErrorSchema,
   BoardTaskListSchema,
   BoardTaskSchema,
+  DeleteTaskResultSchema,
   ProjectSettingsSchema,
   ResetDemoResultSchema,
   TaskDetailSchema,
@@ -10,6 +11,8 @@ import {
   type BoardTask,
   type CreateTaskInput,
   type DecideApprovalInput,
+  type DeleteTaskInput,
+  type DeleteTaskResult,
   type ProjectSettings,
   type ResetDemoResult,
   type TaskDetail,
@@ -40,6 +43,10 @@ export interface ApiClient {
   retryTask(taskId: string): Promise<TaskDetail>;
   retryWithNewBranchTask(taskId: string): Promise<TaskDetail>;
   sendBackTask(taskId: string): Promise<TaskDetail>;
+  /** Cancels the Task's live runs and parks it FAILED with "Stopped by operator". */
+  stopTask(taskId: string): Promise<TaskDetail>;
+  /** Deletes the Task (stopping it first), optionally closing its GitHub issue/PR. */
+  deleteTask(taskId: string, input: DeleteTaskInput): Promise<DeleteTaskResult>;
   /** The human's decision at HUMAN REVIEW. Returns the Task after the workflow engine has acted on it. */
   decideApproval(taskId: string, approvalId: string, input: DecideApprovalInput): Promise<TaskDetail>;
   /** The Project, its GitHub connection, Deploy Targets, and the Manifest as read from the repository. */
@@ -95,6 +102,8 @@ export function createApiClient({ origin, fetch = globalThis.fetch }: ApiClientO
     retryTask: (taskId) => post(API_PATHS.retryTask(taskId), TaskDetailSchema),
     retryWithNewBranchTask: (taskId) => post(API_PATHS.retryWithNewBranchTask(taskId), TaskDetailSchema),
     sendBackTask: (taskId) => post(API_PATHS.sendBackTask(taskId), TaskDetailSchema),
+    stopTask: (taskId) => post(API_PATHS.stopTask(taskId), TaskDetailSchema),
+    deleteTask: (taskId, input) => request(API_PATHS.deleteTask(taskId), DeleteTaskResultSchema, { method: "DELETE", body: JSON.stringify(input) }),
     decideApproval: (taskId, approvalId, input) => post(API_PATHS.decideApproval(taskId, approvalId), TaskDetailSchema, input),
     getProjectSettings: () => request(API_PATHS.project, ProjectSettingsSchema),
     updateMaxConcurrentTasks: (limit: number) => {

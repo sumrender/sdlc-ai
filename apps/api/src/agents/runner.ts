@@ -70,7 +70,15 @@ async function execute(deps: Deps, run: AgentRunRow, body: AgentBody): Promise<v
         sessionVolume: run.agent === "PLANNER" ? `sdlc-ai-opencode-${run.taskId}` : undefined,
       });
       sandbox = own;
-      await body({ deps, sandbox: own, log, run, task, project });
+      // Register so Stop/Delete can destroy this container mid-run; the pool
+      // is the only component that knows every live Sandbox of a Task.
+      const poolForOwned = deps.sandboxes instanceof TaskSandboxPool ? deps.sandboxes : null;
+      const releaseOwned = poolForOwned?.registerOwned(task.id, own) ?? null;
+      try {
+        await body({ deps, sandbox: own, log, run, task, project });
+      } finally {
+        releaseOwned?.();
+      }
     }
     log(`${run.agent} completed`);
   } catch (e) {
@@ -98,6 +106,14 @@ async function execute(deps: Deps, run: AgentRunRow, body: AgentBody): Promise<v
       })
       .catch((e) => console.error("[runner] failed to save log artifact", e));
   }
+
+  // Stop/Delete marks the row CANCELLED while the body runs. The log artifact
+  // above is still saved — a stopped run's transcript is exactly what the
+  // operator wants to read — but nothing else happens: the outcome must not
+  // overwrite CANCELLED, and a cancelled Task gets no retry, no failTask, and
+  // no advance (failTask/advance were already done by whoever cancelled it).
+  const [current] = await db.select({ status: agentRuns.status }).from(agentRuns).where(eq(agentRuns.id, run.id)).limit(1);
+  if (current?.status === "CANCELLED") return;
 
   await db.update(agentRuns).set({ status: outcome, completedAt: new Date(), error }).where(eq(agentRuns.id, run.id));
   await bus.emit(run.taskId, outcome === "COMPLETED" ? "AGENT_RUN_COMPLETED" : "AGENT_RUN_FAILED", {

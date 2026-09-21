@@ -6,6 +6,7 @@ import {
   QuestionCreatedPayloadSchema,
   STAGES,
   TaskCreatedPayloadSchema,
+  TaskDeletedPayloadSchema,
   TaskStageChangedPayloadSchema,
   TaskStatusChangedPayloadSchema,
   type BoardTask,
@@ -117,6 +118,14 @@ export function applyEventToTasks(tasks: readonly BoardTask[], event: Event): Ap
     const created = parsed.data.task;
     const exists = tasks.some((task) => task.id === created.id);
     return { tasks: exists ? [...tasks] : [...tasks, created], reconcile: false };
+  }
+
+  // The Task's rows are gone; drop the card. The persisted Event is
+  // cascade-deleted with the Task, so this only ever arrives live — a refetch
+  // after reconnect naturally shows the Task gone as well.
+  if (event.type === "TASK_DELETED") {
+    if (!TaskDeletedPayloadSchema.safeParse(event.payload).success) return unchanged;
+    return { tasks: tasks.filter((task) => task.id !== event.taskId), reconcile: false };
   }
 
   const patch = patchFor(event);

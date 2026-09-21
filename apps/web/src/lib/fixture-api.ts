@@ -5,6 +5,7 @@ import {
   MAX_CONCURRENT_TASKS_ERROR_CODE,
   retryAvailability,
   sendBackAvailability,
+  stopAvailability,
   REVIEWERS,
   type Agent,
   type AgentRun,
@@ -14,6 +15,8 @@ import {
   type BoardTask,
   type CreateTaskInput,
   type DecideApprovalInput,
+  type DeleteTaskInput,
+  type DeleteTaskResult,
   type Deployment,
   type Event,
   type EventType,
@@ -564,6 +567,35 @@ export function createFixtureApi(): FixtureApi {
       moveTo(taskId, "DEVELOPMENT", "RUNNING");
       runAgent(taskId, "DEVELOPER");
       return toDetail(taskId);
+    },
+    stopTask: async (taskId) => {
+      const task = find(taskId);
+      const availability = stopAvailability(task);
+      if (!availability.allowed) throw new ApiRequestError(409, availability.reason, "NOT_STOPPABLE");
+      finishRunning(taskId);
+      for (const run of detailOf(taskId).testRuns) {
+        if (run.status === "RUNNING" || run.status === "QUEUED") Object.assign(run, { status: "CANCELLED", completedAt: now(), error: "Stopped by operator" });
+      }
+      patchTask(taskId, { error: "Stopped by operator" });
+      emit(taskId, "TASK_STATUS_CHANGED", { status: "FAILED", from: "RUNNING", to: "FAILED", stage: find(taskId).stage });
+      emit(taskId, "TASK_FAILED", { stage: find(taskId).stage, error: "Stopped by operator" });
+      return toDetail(taskId);
+    },
+    deleteTask: async (taskId, input: DeleteTaskInput): Promise<DeleteTaskResult> => {
+      const task = find(taskId);
+      const state = detailOf(taskId);
+      finishRunning(taskId);
+      for (const run of state.testRuns) {
+        if (run.status === "RUNNING" || run.status === "QUEUED") Object.assign(run, { status: "CANCELLED", completedAt: now(), error: "Task deleted" });
+      }
+      let issuesClosed = 0;
+      let pullRequestsClosed = 0;
+      if (input.closeIssue && task.issueNumber) issuesClosed++;
+      if (input.closePullRequest && task.pullRequestNumber && !task.mergedCommitSha) pullRequestsClosed++;
+      emit(taskId, "TASK_DELETED", { title: task.title });
+      tasks = tasks.filter((t) => t.id !== taskId);
+      details.delete(taskId);
+      return { id: taskId, title: task.title, issuesClosed, pullRequestsClosed };
     },
     decideApproval: async (taskId, approvalId, input: DecideApprovalInput) => {
       const task = find(taskId);
