@@ -22,7 +22,7 @@ import { TaskActions } from "~/components/TaskActions";
 import { TestRunResults } from "~/components/TestRunResults";
 import { Button } from "~/components/ui/button";
 import { useProjectSettings } from "~/lib/settings-query";
-import { buildTimeline, formatDateTime, logArtifactFor, type Run } from "~/lib/task-detail";
+import { buildTimeline, formatDateTime, logArtifactFor, splitApprovals, type Run } from "~/lib/task-detail";
 import { useTaskLive, useTaskQuery } from "~/lib/task-query";
 
 export const Route = createFileRoute("/tasks/$id")({
@@ -66,6 +66,23 @@ interface OpenLog {
   subtitle: string;
 }
 
+/** Superseded approvals stay auditable but folded, so stale REJECTEDs don't dominate. */
+function PreviousDecisions({ approvals }: { approvals: TaskDetail["approvals"] }) {
+  if (approvals.length === 0) return null;
+  return (
+    <details className="rounded-lg border border-border">
+      <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground">
+        Previous decisions ({approvals.length})
+      </summary>
+      <div className="flex flex-col gap-2 border-t border-border p-2">
+        {approvals.map((a) => (
+          <DecidedApproval key={a.id} approval={a} compact />
+        ))}
+      </div>
+    </details>
+  );
+}
+
 function TaskDetailView({ task, live }: { task: TaskDetail; live: ReturnType<typeof useTaskLive> }) {
   const [openLog, setOpenLog] = useState<OpenLog | null>(null);
   const [openArtifact, setOpenArtifact] = useState<Artifact | null>(null);
@@ -73,10 +90,10 @@ function TaskDetailView({ task, live }: { task: TaskDetail; live: ReturnType<typ
   const settings = useProjectSettings();
 
   const pendingQuestion = task.questions.find((q) => q.status === "PENDING") ?? null;
-  const sortedApprovals = [...task.approvals].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const latestApproval = sortedApprovals[0] ?? null;
-  const pendingApproval = latestApproval?.status === "PENDING" ? latestApproval : null;
-  const decidedApprovals = sortedApprovals.filter((a) => a.status !== "PENDING");
+  // Only the current decision renders full-size; superseded REJECTEDs fold
+  // under "Previous decisions" (derived each render, so live
+  // APPROVAL_REQUESTED/APPROVAL_DECIDED patches re-fold immediately).
+  const { pendingApproval, currentDecided, olderDecided } = splitApprovals(task.approvals);
   const reviewSummary = summarizeReviews(task.reviews);
   const diffs = task.artifacts.filter((a) => a.type === "DIFF");
 
@@ -160,19 +177,12 @@ function TaskDetailView({ task, live }: { task: TaskDetail; live: ReturnType<typ
         {pendingApproval ? (
           <div className="flex max-w-2xl flex-col gap-3">
             <ApprovalPanel task={task} approval={pendingApproval} defaultBranch={settings.data?.project.defaultBranch} />
-            {decidedApprovals.length > 0 && (
-              <div className="flex flex-col gap-2">
-                {decidedApprovals.map((a) => (
-                  <DecidedApproval key={a.id} approval={a} />
-                ))}
-              </div>
-            )}
+            {olderDecided.length > 0 && <PreviousDecisions approvals={olderDecided} />}
           </div>
-        ) : decidedApprovals.length > 0 ? (
+        ) : currentDecided ? (
           <div className="flex max-w-2xl flex-col gap-2">
-            {decidedApprovals.map((a) => (
-              <DecidedApproval key={a.id} approval={a} />
-            ))}
+            <DecidedApproval key={currentDecided.id} approval={currentDecided} />
+            {olderDecided.length > 0 && <PreviousDecisions approvals={olderDecided} />}
           </div>
         ) : (
           <p className="text-sm text-muted-foreground">The workflow engine has not requested an Approval yet. It appears here when the Task reaches HUMAN REVIEW.</p>

@@ -145,10 +145,10 @@ export function ApprovalPanel({ task, approval, defaultBranch }: ApprovalPanelPr
 }
 
 /** The decision, once made. */
-export function DecidedApproval({ approval }: { approval: Approval }) {
+export function DecidedApproval({ approval, compact = false }: { approval: Approval; compact?: boolean }) {
   const approved = approval.status === "APPROVED";
   return (
-    <div className={cn("flex flex-col gap-2 rounded-lg border p-3", approved ? "border-emerald-200 bg-emerald-50" : "border-red-200 bg-red-50")}>
+    <div className={cn("flex flex-col gap-2 rounded-lg border", compact ? "p-2" : "p-3", approved ? "border-emerald-200 bg-emerald-50" : "border-red-200 bg-red-50")}>
       <div className="flex items-center gap-2">
         <ShieldCheck className={cn("h-4 w-4", approved ? "text-emerald-600" : "text-red-600")} aria-hidden />
         <Badge variant={approved ? "success" : "destructive"}>{approval.status}</Badge>

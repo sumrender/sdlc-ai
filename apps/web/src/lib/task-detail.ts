@@ -7,6 +7,7 @@ import {
   E2ECoverageDecidedPayloadSchema,
   PRCommentPostedPayloadSchema,
   type AgentRun,
+  type Approval,
   type Artifact,
   type Event,
   type SseMessage,
@@ -90,6 +91,28 @@ export function artifactsForTestRun(task: Pick<TaskDetail, "artifacts">, testRun
 /** The Playwright HTML report entry point among a Test Run's Artifacts, if it was copied out. */
 export function findReport(artifacts: readonly Artifact[]): Artifact | null {
   return artifacts.find((a) => a.type === "TEST_REPORT" && /(^|\/)index\.html$/.test(a.name)) ?? null;
+}
+
+// ---- Approvals -------------------------------------------------------------
+
+/**
+ * Split approvals into what renders full-size vs folded. Only the latest
+ * approval is current: when it is PENDING, every decided approval is
+ * superseded; otherwise the newest decided approval is current. The page
+ * derives this each render so live APPROVAL_REQUESTED/APPROVAL_DECIDED
+ * patches (which only append/replace rows) immediately re-fold history.
+ */
+export function splitApprovals(approvals: readonly Approval[]): {
+  pendingApproval: Approval | null;
+  currentDecided: Approval | null;
+  olderDecided: Approval[];
+} {
+  const sorted = [...approvals].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const pendingApproval = sorted[0]?.status === "PENDING" ? sorted[0] : null;
+  const decided = sorted.filter((a) => a.status !== "PENDING");
+  if (pendingApproval) return { pendingApproval, currentDecided: null, olderDecided: decided };
+  const [currentDecided, ...olderDecided] = decided;
+  return { pendingApproval: null, currentDecided: currentDecided ?? null, olderDecided };
 }
 
 // ---- Activity feed --------------------------------------------------------
