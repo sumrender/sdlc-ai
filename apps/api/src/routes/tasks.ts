@@ -3,7 +3,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { and, asc, eq } from "drizzle-orm";
 import { Hono } from "hono";
-import { AnswerQuestionInputSchema, CreateTaskInputSchema, DecideApprovalInputSchema, DeleteTaskInputSchema } from "@sdlc-ai/shared";
+import { AnswerQuestionInputSchema, CreateTaskInputSchema, DecideApprovalInputSchema, DecideReviewInputSchema, DeleteTaskInputSchema, SendReviewBackInputSchema, UpdateReviewInputSchema } from "@sdlc-ai/shared";
 import { CONTENT_TYPES, type ArtifactStore } from "../artifacts/store.js";
 import { db } from "../db/index.js";
 import { artifacts, testRuns } from "../db/schema.js";
@@ -66,6 +66,24 @@ export function taskRoutes(workflow: WorkflowService, store: ArtifactStore) {
   r.post("/:id/approvals/:approvalId/decide", async (c) => {
     const input = await parseBody(c.req.raw, DecideApprovalInputSchema);
     await workflow.decideApproval(c.req.param("id"), c.req.param("approvalId"), input);
+    return c.json(await workflow.taskDetail(c.req.param("id")));
+  });
+
+  r.post("/:id/reviews/:reviewId/decision", async (c) => {
+    const input = await parseBody(c.req.raw, DecideReviewInputSchema);
+    await workflow.decideReview(c.req.param("id"), c.req.param("reviewId"), input);
+    return c.json(await workflow.taskDetail(c.req.param("id")));
+  });
+
+  r.patch("/:id/reviews/:reviewId", async (c) => {
+    const input = await parseBody(c.req.raw, UpdateReviewInputSchema);
+    await workflow.updateReview(c.req.param("id"), c.req.param("reviewId"), input);
+    return c.json(await workflow.taskDetail(c.req.param("id")));
+  });
+
+  r.post("/:id/reviews/:reviewId/send-back", async (c) => {
+    const input = await parseBody(c.req.raw, SendReviewBackInputSchema);
+    await workflow.sendReviewBackToDeveloper(c.req.param("id"), c.req.param("reviewId"), input);
     return c.json(await workflow.taskDetail(c.req.param("id")));
   });
 

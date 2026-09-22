@@ -205,6 +205,8 @@ function TaskDetailView({ task, live }: { task: TaskDetail; live: ReturnType<typ
             <ReviewPanel
               reviews={task.reviews}
               agentRuns={task.agentRuns}
+              taskId={task.id}
+              pendingApprovalId={pendingApproval?.id ?? null}
               onOpenRun={(agentRunId) => {
                 const run = task.agentRuns.find((r) => r.id === agentRunId);
                 if (run) openRunLog({ kind: "agent", run });

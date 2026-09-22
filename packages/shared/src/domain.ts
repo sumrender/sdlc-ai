@@ -43,6 +43,10 @@ export const VERDICTS = ["PASS", "REJECT"] as const;
 export const VerdictSchema = z.enum(VERDICTS);
 export type Verdict = z.infer<typeof VerdictSchema>;
 
+export const HUMAN_REVIEW_DECISIONS = ["ACCEPTED", "REJECTED"] as const;
+export const HumanReviewDecisionSchema = z.enum(HUMAN_REVIEW_DECISIONS);
+export type HumanReviewDecision = z.infer<typeof HumanReviewDecisionSchema>;
+
 export const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"] as const;
 export const SeveritySchema = z.enum(SEVERITIES);
 export type Severity = z.infer<typeof SeveritySchema>;
@@ -82,6 +86,10 @@ export const EVENT_TYPES = [
   "TEST_RUN_STARTED",
   "TEST_RUN_COMPLETED",
   "REVIEW_COMPLETED",
+  "REVIEW_ACCEPTED",
+  "REVIEW_REJECTED",
+  "REVIEW_EDITED",
+  "REVIEW_SENT_BACK",
   "APPROVAL_REQUESTED",
   "APPROVAL_DECIDED",
   "MERGED",
@@ -224,6 +232,12 @@ export const ReviewSchema = z.object({
   reviewer: ReviewerSchema,
   verdict: VerdictSchema,
   findings: z.array(FindingSchema),
+  humanDecision: HumanReviewDecisionSchema.nullable().default(null),
+  humanComment: z.string().nullable().default(null),
+  humanDecidedAt: iso.nullable().default(null),
+  humanEdited: z.boolean().default(false),
+  originalVerdict: VerdictSchema.nullable().default(null),
+  originalFindings: z.array(FindingSchema).nullable().default(null),
   createdAt: iso,
 });
 export type Review = z.infer<typeof ReviewSchema>;

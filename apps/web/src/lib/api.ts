@@ -11,12 +11,15 @@ import {
   type BoardTask,
   type CreateTaskInput,
   type DecideApprovalInput,
+  type DecideReviewInput,
   type DeleteTaskInput,
   type DeleteTaskResult,
   type ProjectSettings,
   type ResetDemoResult,
+  type SendReviewBackInput,
   type TaskDetail,
   type UpdateProjectSettingsInput,
+  type UpdateReviewInput,
 } from "@sdlc-ai/shared";
 import type { ZodType, ZodTypeDef } from "zod";
 
@@ -49,6 +52,12 @@ export interface ApiClient {
   deleteTask(taskId: string, input: DeleteTaskInput): Promise<DeleteTaskResult>;
   /** The human's decision at HUMAN REVIEW. Returns the Task after the workflow engine has acted on it. */
   decideApproval(taskId: string, approvalId: string, input: DecideApprovalInput): Promise<TaskDetail>;
+  /** Accept a Review as valid or reject it as invalid, with a comment. Persists on the Review; never moves the Task. */
+  decideReview(taskId: string, reviewId: string, input: DecideReviewInput): Promise<TaskDetail>;
+  /** Curate a Review's verdict/findings. Persists on the Review; never moves the Task. */
+  updateReview(taskId: string, reviewId: string, input: UpdateReviewInput): Promise<TaskDetail>;
+  /** Send one (possibly edited) Review back to the Developer. Rejects the pending Approval and moves to DEVELOPMENT. */
+  sendReviewBack(taskId: string, reviewId: string, input: SendReviewBackInput): Promise<TaskDetail>;
   /** The Project, its GitHub connection, Deploy Targets, and the Manifest as read from the repository. */
   getProjectSettings(): Promise<ProjectSettings>;
   /** Updates the max concurrent Tasks limit. Returns the refreshed Settings. */
@@ -105,6 +114,9 @@ export function createApiClient({ origin, fetch = globalThis.fetch }: ApiClientO
     stopTask: (taskId) => post(API_PATHS.stopTask(taskId), TaskDetailSchema),
     deleteTask: (taskId, input) => request(API_PATHS.deleteTask(taskId), DeleteTaskResultSchema, { method: "DELETE", body: JSON.stringify(input) }),
     decideApproval: (taskId, approvalId, input) => post(API_PATHS.decideApproval(taskId, approvalId), TaskDetailSchema, input),
+    decideReview: (taskId, reviewId, input) => post(API_PATHS.decideReview(taskId, reviewId), TaskDetailSchema, input),
+    updateReview: (taskId, reviewId, input) => request(API_PATHS.updateReview(taskId, reviewId), TaskDetailSchema, { method: "PATCH", body: JSON.stringify(input) }),
+    sendReviewBack: (taskId, reviewId, input) => post(API_PATHS.sendReviewBack(taskId, reviewId), TaskDetailSchema, input),
     getProjectSettings: () => request(API_PATHS.project, ProjectSettingsSchema),
     updateMaxConcurrentTasks: (limit: number) => {
       const body: UpdateProjectSettingsInput = { maxConcurrentTasks: limit };

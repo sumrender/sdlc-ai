@@ -57,6 +57,13 @@
       "when": 1789990000000,
       "tag": "0007_task_deleted_event",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1790092493199,
+      "tag": "0008_short_iron_fist",
+      "breakpoints": true
     }
   ]
 }

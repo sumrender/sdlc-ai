@@ -15,22 +15,26 @@ import {
   type BoardTask,
   type CreateTaskInput,
   type DecideApprovalInput,
+  type DecideReviewInput,
   type DeleteTaskInput,
   type DeleteTaskResult,
   type Deployment,
   type Event,
   type EventType,
   type Finding,
+  type HumanReviewDecision,
   type ProjectSettings,
   type Question,
   type ResetDemoResult,
   type Review,
   type Reviewer,
+  type SendReviewBackInput,
   type SseMessage,
   type Stage,
   type TaskDetail,
   type TaskStatus,
   type TestRun,
+  type UpdateReviewInput,
   type Verdict,
 } from "@sdlc-ai/shared";
 import { ApiRequestError, type ApiClient } from "./api";
@@ -182,6 +186,24 @@ const FIXTURE_SETTINGS: ProjectSettings = {
 
 const isReviewer = (agent: Agent): agent is Reviewer => (REVIEWERS as readonly Agent[]).includes(agent);
 
+function makeReview(taskId: string, agentRunId: string, reviewer: Reviewer, verdict: Verdict, findings: Finding[]): Review {
+  return {
+    id: crypto.randomUUID(),
+    taskId,
+    agentRunId,
+    reviewer,
+    verdict,
+    findings,
+    humanDecision: null,
+    humanComment: null,
+    humanDecidedAt: null,
+    humanEdited: false,
+    originalVerdict: null,
+    originalFindings: null,
+    createdAt: now(),
+  };
+}
+
 export function createFixtureApi(): FixtureApi {
   let tasks: BoardTask[] = [];
   let fixtureLimit = DEFAULT_MAX_CONCURRENT_TASKS;
@@ -266,7 +288,7 @@ export function createFixtureApi(): FixtureApi {
     saveLog(taskId, { agentRunId: runId }, `${run.agent.toLowerCase()}-attempt-${run.attempt}.log`);
     emit(taskId, status === "COMPLETED" ? "AGENT_RUN_COMPLETED" : "AGENT_RUN_FAILED", { agentRunId: runId, agent: run.agent, attempt: run.attempt, status });
     if (status === "COMPLETED" && isReviewer(run.agent)) {
-      const review: Review = { id: crypto.randomUUID(), taskId, agentRunId: runId, reviewer: run.agent, ...REVIEW_OUTPUT[run.agent], createdAt: now() };
+      const review = makeReview(taskId, runId, run.agent, REVIEW_OUTPUT[run.agent].verdict, REVIEW_OUTPUT[run.agent].findings);
       state.reviews.push(review);
       emit(taskId, "REVIEW_COMPLETED", { reviewId: review.id, reviewer: review.reviewer, verdict: review.verdict, findingCount: review.findings.length });
     }
@@ -617,6 +639,58 @@ export function createFixtureApi(): FixtureApi {
       }
       return toDetail(taskId);
     },
+    decideReview: async (taskId, reviewId, input: DecideReviewInput) => {
+      find(taskId);
+      const review = detailOf(taskId).reviews.find((r) => r.id === reviewId);
+      if (!review) throw new ApiRequestError(404, "Review not found", "NOT_FOUND");
+      const comment = input.comment.trim();
+      if (input.decision === "REJECTED" && !comment) throw new ApiRequestError(400, "A comment is required when marking a review invalid.", "REVIEW_COMMENT_REQUIRED");
+      Object.assign(review, { humanDecision: input.decision as HumanReviewDecision, humanComment: comment || null, humanDecidedAt: now() });
+      emit(taskId, input.decision === "ACCEPTED" ? "REVIEW_ACCEPTED" : "REVIEW_REJECTED", { reviewId, reviewer: review.reviewer, decision: input.decision, comment: comment || null });
+      return toDetail(taskId);
+    },
+    updateReview: async (taskId, reviewId, input: UpdateReviewInput) => {
+      find(taskId);
+      const review = detailOf(taskId).reviews.find((r) => r.id === reviewId);
+      if (!review) throw new ApiRequestError(404, "Review not found", "NOT_FOUND");
+      if (!review.humanEdited) {
+        review.originalVerdict = review.verdict;
+        review.originalFindings = [...review.findings];
+      }
+      if (input.verdict !== undefined) review.verdict = input.verdict;
+      if (input.findings !== undefined) review.findings = input.findings;
+      review.humanEdited = true;
+      emit(taskId, "REVIEW_EDITED", { reviewId, reviewer: review.reviewer, verdict: review.verdict, findingCount: review.findings.length });
+      return toDetail(taskId);
+    },
+    sendReviewBack: async (taskId, reviewId, input: SendReviewBackInput) => {
+      const task = find(taskId);
+      const state = detailOf(taskId);
+      const review = state.reviews.find((r) => r.id === reviewId);
+      if (!review) throw new ApiRequestError(404, "Review not found", "NOT_FOUND");
+      if (task.stage !== "HUMAN_REVIEW" || task.status !== "WAITING") throw new ApiRequestError(409, "Send back is only available while the Task awaits your decision in HUMAN REVIEW.", "NOT_SENDABLE");
+      const approval = state.approvals.filter((a) => a.taskId === taskId).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ?? null;
+      if (!approval || approval.status !== "PENDING") throw new ApiRequestError(409, "Send back needs a PENDING Approval.", "NO_PENDING_APPROVAL");
+      if (input.verdict !== undefined || input.findings !== undefined) {
+        if (!review.humanEdited) {
+          review.originalVerdict = review.verdict;
+          review.originalFindings = [...review.findings];
+        }
+        if (input.verdict !== undefined) review.verdict = input.verdict;
+        if (input.findings !== undefined) review.findings = input.findings;
+        review.humanEdited = true;
+        emit(taskId, "REVIEW_EDITED", { reviewId, reviewer: review.reviewer, verdict: review.verdict, findingCount: review.findings.length });
+      }
+      const comment = input.comment.trim();
+      const lines = review.findings.map((f) => `- [${review.reviewer}] ${f.severity}: ${f.message}${f.file ? ` (${f.file}${f.line ? `:${f.line}` : ""})` : ""}`).join("\n");
+      const label = review.reviewer === "REVIEWER_FRONTEND" ? "Frontend" : "Backend";
+      patchTask(taskId, { pendingFeedback: `Human reviewer feedback:\n${comment || "(no comment)"}\n\nReviewer findings (${label} · ${review.verdict}):\n${lines || "- (none)"}` });
+      Object.assign(approval, { status: "REJECTED", feedback: `[${label} Review]${comment ? ` ${comment}` : " — sent back to the Developer."}`, decidedAt: now() });
+      emit(taskId, "APPROVAL_DECIDED", { approvalId: approval.id, decision: "REJECTED", feedback: approval.feedback });
+      emit(taskId, "REVIEW_SENT_BACK", { reviewId, reviewer: review.reviewer, approvalId: approval.id });
+      develop(taskId);
+      return toDetail(taskId);
+    },
     getProjectSettings: async () => {
       const active = tasks.filter((t) => t.stage !== "TODO" && t.stage !== "STAGING");
       const summary = active.map((t) => ({ id: t.id, title: t.title, stage: t.stage }));
@@ -918,7 +992,8 @@ function seedDetail(task: BoardTask, state: DetailState) {
   stage("E2E", "AGENT_REVIEW", age - 22);
   for (const reviewer of REVIEWERS) {
     const r = run(reviewer, age - 23, 2, ["Cloning at task branch", `Verdict: ${REVIEW_OUTPUT[reviewer].verdict}`]);
-    const review: Review = { id: crypto.randomUUID(), taskId: task.id, agentRunId: r.id, reviewer, ...REVIEW_OUTPUT[reviewer], createdAt: minutesAgo(age - 25) };
+    const review = makeReview(task.id, r.id, reviewer, REVIEW_OUTPUT[reviewer].verdict, REVIEW_OUTPUT[reviewer].findings);
+    review.createdAt = minutesAgo(age - 25);
     state.reviews.push(review);
     event("REVIEW_COMPLETED", { reviewId: review.id, reviewer, verdict: review.verdict, findingCount: review.findings.length }, age - 25);
   }

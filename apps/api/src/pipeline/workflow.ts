@@ -14,10 +14,15 @@ import {
   sendBackAvailability,
   stopAvailability,
   type CreateTaskInput,
-  type DeleteTaskInput,
   type DecideApprovalInput,
+  type DecideReviewInput,
+  type DeleteTaskInput,
+  type Finding,
   type ResetDemoResult,
   type Reviewer,
+  type SendReviewBackInput,
+  type UpdateReviewInput,
+  type Verdict,
 } from "@sdlc-ai/shared";
 import { developerBody } from "../agents/developer.js";
 import { e2eTestWriterBody } from "../agents/e2e-test-writer.js";
@@ -665,6 +670,94 @@ export class WorkflowService {
     return requireTask(approval.taskId);
   }
 
+  /** Human moderation of one agent Review: ACCEPTED (valid) or REJECTED (invalid). Persists on the Review row so anyone opening the Task sees the decision and comment. Never moves the Task. */
+  async decideReview(taskId: string, reviewId: string, input: DecideReviewInput): Promise<TaskRow> {
+    await requireTask(taskId);
+    const review = await this.requireReview(taskId, reviewId);
+    const comment = input.comment.trim();
+    if (input.decision === "REJECTED" && !comment) throw new HttpError(400, "A comment is required when marking a review invalid.");
+    await db
+      .update(reviews)
+      .set({ humanDecision: input.decision, humanComment: comment || null, humanDecidedAt: new Date() })
+      .where(eq(reviews.id, review.id));
+    await bus.emit(taskId, input.decision === "ACCEPTED" ? "REVIEW_ACCEPTED" : "REVIEW_REJECTED", {
+      reviewId: review.id,
+      reviewer: review.reviewer,
+      decision: input.decision,
+      comment: comment || null,
+    });
+    return requireTask(taskId);
+  }
+
+  /** Curate a Review's verdict/findings. First edit snapshots the agent output into original_*; sets humanEdited. Never moves the Task. */
+  async updateReview(taskId: string, reviewId: string, input: UpdateReviewInput): Promise<TaskRow> {
+    await requireTask(taskId);
+    const review = await this.requireReview(taskId, reviewId);
+    const patch: Partial<typeof reviews.$inferInsert> = {};
+    if (input.verdict !== undefined) patch.verdict = input.verdict as Verdict;
+    if (input.findings !== undefined) patch.findings = input.findings as Finding[];
+    if (!review.humanEdited) {
+      patch.originalVerdict = review.verdict;
+      patch.originalFindings = review.findings;
+    }
+    patch.humanEdited = true;
+    await db.update(reviews).set(patch).where(eq(reviews.id, review.id));
+    await bus.emit(taskId, "REVIEW_EDITED", { reviewId: review.id, reviewer: review.reviewer, verdict: patch.verdict ?? review.verdict, findingCount: (patch.findings ?? review.findings).length });
+    return requireTask(taskId);
+  }
+
+  /**
+   * Send one (possibly edited) Review back to the Developer. Optionally applies
+   * verdict/findings first, then rejects the pending Approval with only this
+   * Review's findings plus the comment and moves the Task to DEVELOPMENT.
+   */
+  async sendReviewBackToDeveloper(taskId: string, reviewId: string, input: SendReviewBackInput): Promise<TaskRow> {
+    const task = await requireTask(taskId);
+    const review = await this.requireReview(taskId, reviewId);
+    if (task.stage !== "HUMAN_REVIEW" || task.status !== "WAITING") throw new HttpError(409, "Send back is only available while the Task awaits your decision in HUMAN REVIEW.");
+    const approval = await latestApproval(taskId, task.stageEnteredAt);
+    if (!approval || approval.status !== "PENDING") throw new HttpError(409, "Send back needs a PENDING Approval.");
+    // Only the latest Review per reviewer can be sent back; older ones are history from a previous loop.
+    const since = await reviewsSince(taskId, task.stageEnteredAt);
+    const latestForReviewer = since.filter((r) => r.reviewer === review.reviewer).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
+    if (!latestForReviewer || latestForReviewer.id !== review.id) throw new HttpError(409, "That Review was superseded by a newer one.");
+
+    let effective: ReviewRow = review;
+    if (input.verdict !== undefined || input.findings !== undefined) {
+      const patch: Partial<typeof reviews.$inferInsert> = { humanEdited: true };
+      if (!review.humanEdited) {
+        patch.originalVerdict = review.verdict;
+        patch.originalFindings = review.findings;
+      }
+      if (input.verdict !== undefined) patch.verdict = input.verdict as Verdict;
+      if (input.findings !== undefined) patch.findings = input.findings as Finding[];
+      const [updated] = await db.update(reviews).set(patch).where(eq(reviews.id, review.id)).returning();
+      effective = updated!;
+      await bus.emit(taskId, "REVIEW_EDITED", { reviewId: review.id, reviewer: review.reviewer, verdict: effective.verdict, findingCount: effective.findings.length });
+    }
+
+    const comment = input.comment.trim();
+    const feedback = singleReviewFeedback(comment, effective);
+    const approvalFeedback = `[${reviewerLabel(effective.reviewer)} Review]${comment ? ` ${comment}` : " — sent back to the Developer."}`;
+    await db.update(approvals).set({ status: "REJECTED", feedback: approvalFeedback, decidedAt: new Date() }).where(eq(approvals.id, approval.id));
+    await bus.emit(taskId, "APPROVAL_DECIDED", { approvalId: approval.id, decision: "REJECTED", feedback: approvalFeedback });
+    await bus.emit(taskId, "REVIEW_SENT_BACK", { reviewId: effective.id, reviewer: effective.reviewer, approvalId: approval.id });
+    await updateTask(taskId, { pendingFeedback: feedback });
+    await transition(task, "DEVELOPMENT", "RUNNING");
+    await this.advance(taskId);
+    return requireTask(taskId);
+  }
+
+  private async requireReview(taskId: string, reviewId: string): Promise<ReviewRow> {
+    const [review] = await db
+      .select()
+      .from(reviews)
+      .where(and(eq(reviews.id, reviewId), eq(reviews.taskId, taskId)))
+      .limit(1);
+    if (!review) throw new HttpError(404, "Review not found");
+    return review;
+  }
+
   async runDemo(): Promise<TaskRow> {
     const project = await getProject();
     const limit = project.maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS;
@@ -802,6 +895,18 @@ function humanRejectFeedback(feedback: string, reviews: ReviewRow[]): string {
     .flatMap((r) => r.findings.map((f) => `- [${r.reviewer}] ${f.severity}: ${f.message}${f.file ? ` (${f.file}${f.line ? `:${f.line}` : ""})` : ""}`))
     .join("\n");
   return `Human reviewer feedback:\n${feedback}\n\nReviewer findings:\n${findings || "- (none)"}`;
+}
+
+/** Scoped variant: only one curated Review plus the human comment goes to the Developer. */
+function singleReviewFeedback(comment: string, review: ReviewRow): string {
+  const findings = review.findings
+    .map((f) => `- [${review.reviewer}] ${f.severity}: ${f.message}${f.file ? ` (${f.file}${f.line ? `:${f.line}` : ""})` : ""}`)
+    .join("\n");
+  return `Human reviewer feedback:\n${comment || "(no comment)"}\n\nReviewer findings (${reviewerLabel(review.reviewer)} · ${review.verdict}):\n${findings || "- (none)"}`;
+}
+
+function reviewerLabel(reviewer: ReviewRow["reviewer"]): string {
+  return reviewer === "REVIEWER_FRONTEND" ? "Frontend" : "Backend";
 }
 
 function logSwallow(what: string) {

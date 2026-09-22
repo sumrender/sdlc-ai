@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { MaxConcurrentTasksSchema, ProjectSchema } from "./domain";
+import { FindingSchema, HumanReviewDecisionSchema, MaxConcurrentTasksSchema, ProjectSchema, VerdictSchema } from "./domain";
 import { ProjectManifestSchema } from "./manifest";
 
 export const CreateTaskInputSchema = z.object({
@@ -21,6 +21,39 @@ export const DecideApprovalInputSchema = z.discriminatedUnion("decision", [
   z.object({ decision: z.literal("REJECTED"), feedback: z.string().trim().min(1).max(10_000) }),
 ]);
 export type DecideApprovalInput = z.infer<typeof DecideApprovalInputSchema>;
+
+/**
+ * Human moderation of a single agent Review. ACCEPTED means "valid, keep it"
+ * (optional insights comment); REJECTED means "invalid, ignore it" (comment
+ * required so anyone opening the Task sees why). Does not move the Task.
+ */
+export const DecideReviewInputSchema = z.object({
+  decision: HumanReviewDecisionSchema,
+  comment: z.string().trim().max(4_000).default(""),
+}).refine((v) => v.decision !== "REJECTED" || v.comment.length > 0, {
+  message: "A comment is required when marking a review invalid.",
+  path: ["comment"],
+});
+export type DecideReviewInput = z.infer<typeof DecideReviewInputSchema>;
+
+/** Curate a Review before sending it back: overwrite verdict and/or findings. */
+export const UpdateReviewInputSchema = z.object({
+  verdict: VerdictSchema.optional(),
+  findings: z.array(FindingSchema).max(100).optional(),
+}).refine((v) => v.verdict !== undefined || v.findings !== undefined, { message: "verdict or findings is required" });
+export type UpdateReviewInput = z.infer<typeof UpdateReviewInputSchema>;
+
+/**
+ * Send one (possibly edited) Review back to the Developer. Applies the given
+ * verdict/findings first when present, then rejects the pending Approval with
+ * only this Review's findings plus the comment and moves to DEVELOPMENT.
+ */
+export const SendReviewBackInputSchema = z.object({
+  comment: z.string().trim().max(10_000).default(""),
+  verdict: VerdictSchema.optional(),
+  findings: z.array(FindingSchema).max(100).optional(),
+});
+export type SendReviewBackInput = z.infer<typeof SendReviewBackInputSchema>;
 
 /**
  * Body of DELETE /tasks/:id. Deleting a Task also stops it when runs are live;
@@ -93,6 +126,9 @@ export const API_PATHS = {
   deleteTask: (taskId: string) => `/tasks/${taskId}`,
   answerQuestion: (taskId: string, questionId: string) => `/tasks/${taskId}/questions/${questionId}/answer`,
   decideApproval: (taskId: string, approvalId: string) => `/tasks/${taskId}/approvals/${approvalId}/decide`,
+  decideReview: (taskId: string, reviewId: string) => `/tasks/${taskId}/reviews/${reviewId}/decision`,
+  updateReview: (taskId: string, reviewId: string) => `/tasks/${taskId}/reviews/${reviewId}`,
+  sendReviewBack: (taskId: string, reviewId: string) => `/tasks/${taskId}/reviews/${reviewId}/send-back`,
   artifacts: (taskId: string) => `/tasks/${taskId}/artifacts`,
   artifactContent: (taskId: string, artifactId: string) => `/tasks/${taskId}/artifacts/${artifactId}/content`,
   project: "/project",

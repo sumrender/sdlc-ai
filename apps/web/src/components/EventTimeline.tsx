@@ -17,6 +17,10 @@ const LABEL: Record<EventType, string> = {
   TEST_RUN_STARTED: "Test Run started",
   TEST_RUN_COMPLETED: "Test Run completed",
   REVIEW_COMPLETED: "Review completed",
+  REVIEW_ACCEPTED: "Review accepted",
+  REVIEW_REJECTED: "Review marked invalid",
+  REVIEW_EDITED: "Review edited",
+  REVIEW_SENT_BACK: "Review sent back",
   APPROVAL_REQUESTED: "Approval requested",
   APPROVAL_DECIDED: "Approval decided",
   MERGED: "Merged",
@@ -46,6 +50,13 @@ function summarize(event: Event): string | null {
       return p.passed !== undefined ? `${str(p.passed) ?? 0} passed, ${str(p.failed) ?? 0} failed` : str(p.status);
     case "REVIEW_COMPLETED":
       return [str(p.reviewer), str(p.verdict)].filter(Boolean).join(" · ");
+    case "REVIEW_ACCEPTED":
+    case "REVIEW_REJECTED":
+      return [str(p.reviewer), str(p.decision)].filter(Boolean).join(" · ");
+    case "REVIEW_EDITED":
+      return [str(p.reviewer), str(p.verdict)].filter(Boolean).join(" · ");
+    case "REVIEW_SENT_BACK":
+      return str(p.reviewer);
     case "APPROVAL_DECIDED":
       return str(p.decision);
     case "PR_CREATED":

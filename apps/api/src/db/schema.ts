@@ -7,6 +7,7 @@ import {
   DEPLOYMENT_STATUSES,
   DEPLOY_TARGETS,
   EVENT_TYPES,
+  HUMAN_REVIEW_DECISIONS,
   PROVIDERS,
   QUESTION_STATUSES,
   REVIEWERS,
@@ -25,6 +26,7 @@ export const reviewerEnum = pgEnum("reviewer", REVIEWERS);
 export const runStatusEnum = pgEnum("run_status", RUN_STATUSES);
 export const questionStatusEnum = pgEnum("question_status", QUESTION_STATUSES);
 export const verdictEnum = pgEnum("verdict", VERDICTS);
+export const humanReviewDecisionEnum = pgEnum("human_review_decision", HUMAN_REVIEW_DECISIONS);
 export const approvalStatusEnum = pgEnum("approval_status", APPROVAL_STATUSES);
 export const deployTargetEnum = pgEnum("deploy_target", DEPLOY_TARGETS);
 export const providerEnum = pgEnum("provider", PROVIDERS);
@@ -138,6 +140,12 @@ export const reviews = pgTable("reviews", {
   reviewer: reviewerEnum("reviewer").notNull(),
   verdict: verdictEnum("verdict").notNull(),
   findings: jsonb("findings").$type<Finding[]>().notNull().default([]),
+  humanDecision: humanReviewDecisionEnum("human_decision"),
+  humanComment: text("human_comment"),
+  humanDecidedAt: ts("human_decided_at"),
+  humanEdited: boolean("human_edited").notNull().default(false),
+  originalVerdict: verdictEnum("original_verdict"),
+  originalFindings: jsonb("original_findings").$type<Finding[]>(),
   createdAt: ts("created_at").notNull().defaultNow(),
 });
 
