@@ -1,5 +1,9 @@
 # AI powered SDLC
 
+## 🎥 Demo
+
+[▶️ **Watch the AI-powered SDLC demo**](https://drive.google.com/file/d/1M68KbXx7560ukndh5eSSoWD7BRFZ_DbY/view)
+
 An AI-native SDLC control plane: a Task moves through seven fixed Stages (TODO, PLANNING,
 DEVELOPMENT, E2E, AGENT REVIEW, HUMAN REVIEW, STAGING) on a live Kanban. OpenCode agents run
 in Docker Sandboxes, work lands as a GitHub branch and PR, the Project's own Playwright
