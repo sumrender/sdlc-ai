@@ -3,7 +3,9 @@ dist/
 .output/
 .vinxi/
 .env
+.env.meme
 *.log
 playwright-report/
 test-results/
 artifacts/
+PLAN.md
