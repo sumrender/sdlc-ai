@@ -12,7 +12,7 @@ export class DockerSandboxRunner implements SandboxRunner {
     private readonly dockerBin: string,
   ) {}
 
-  async create({ name, sessionVolume }: SandboxCreateOptions): Promise<Sandbox> {
+  async create({ name, sessionVolume, image }: SandboxCreateOptions): Promise<Sandbox> {
     // API restart orphans pooled containers ( --rm only removes on daemon stop).
     // Proactively remove any stale container with the same name before creating.
     await runProcess(this.dockerBin, ["rm", "-f", name]).catch(() => undefined);
@@ -27,7 +27,7 @@ export class DockerSandboxRunner implements SandboxRunner {
       "CI=1",
       "-w",
       WORKSPACE,
-      this.image,
+      image ?? this.image,
       "sleep",
       "infinity",
     );

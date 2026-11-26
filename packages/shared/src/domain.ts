@@ -138,6 +138,7 @@ const iso = z.string();
 
 export const ProjectSchema = z.object({
   id: z.string(),
+  slug: z.string(),
   name: z.string(),
   owner: z.string(),
   repo: z.string(),
@@ -145,9 +146,26 @@ export const ProjectSchema = z.object({
   deployTargets: z.array(DeployTargetConfigSchema),
   maxConcurrentTasks: MaxConcurrentTasksSchema.default(DEFAULT_MAX_CONCURRENT_TASKS),
   reuseSandbox: z.boolean().default(true),
+  active: z.boolean().default(true),
   createdAt: iso,
 });
 export type Project = z.infer<typeof ProjectSchema>;
+
+export const ProjectSummarySchema = z.object({
+  id: z.string(),
+  slug: z.string(),
+  name: z.string(),
+  owner: z.string(),
+  repo: z.string(),
+  defaultBranch: z.string(),
+  active: z.boolean(),
+  activeTaskCount: z.number().int(),
+  maxConcurrentTasks: MaxConcurrentTasksSchema,
+  configOk: z.boolean(),
+  configHash: z.string().nullable(),
+});
+export type ProjectSummary = z.infer<typeof ProjectSummarySchema>;
+export const ProjectSummaryListSchema = z.array(ProjectSummarySchema);
 
 export const TaskSchema = z.object({
   id: z.string(),
@@ -301,9 +319,10 @@ export const TaskDetailSchema = TaskSchema.extend({
 export type TaskDetail = z.infer<typeof TaskDetailSchema>;
 
 export const SseMessageSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("event"), event: EventSchema }),
+  z.object({ kind: z.literal("event"), projectId: z.string(), event: EventSchema }),
   z.object({
     kind: z.literal("agent_output"),
+    projectId: z.string(),
     taskId: z.string(),
     agentRunId: z.string().nullable(),
     testRunId: z.string().nullable(),

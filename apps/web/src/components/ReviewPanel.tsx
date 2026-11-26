@@ -9,7 +9,8 @@ import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { Textarea } from "~/components/ui/textarea";
 import { useApi } from "~/lib/api-context";
-import { tasksQueryKey } from "~/lib/board-query";
+import { allTasksQueryKey } from "~/lib/board-query";
+import { projectsQueryKey } from "~/lib/settings-query";
 import { formatTime } from "~/lib/task-detail";
 import { setTaskDetail } from "~/lib/task-query";
 import { cn } from "~/lib/utils";
@@ -122,7 +123,8 @@ function ReviewCard({ reviewer, review, run, onOpenRun, taskId, pendingApprovalI
 
   const onSuccess = (detail: TaskDetail) => {
     setTaskDetail(queryClient, detail);
-    void queryClient.invalidateQueries({ queryKey: tasksQueryKey });
+    void queryClient.invalidateQueries({ queryKey: allTasksQueryKey });
+    void queryClient.invalidateQueries({ queryKey: projectsQueryKey });
     setMode(null);
     setComment("");
   };

@@ -1,30 +1,46 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { AlertTriangle, CheckCircle2, ExternalLink, RefreshCw, XCircle } from "lucide-react";
-import { MAX_CONCURRENT_TASKS_LIMIT, type ProjectSettings, type Provider } from "@sdlc-ai/shared";
+import { AlertTriangle, CheckCircle2, ExternalLink, RefreshCw, RotateCw, XCircle } from "lucide-react";
+import { MAX_CONCURRENT_TASKS_LIMIT, type EnvValue, type ProjectSettings, type Provider } from "@sdlc-ai/shared";
 import { Section } from "~/components/Section";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { formatDateTime } from "~/lib/task-detail";
-import { useProjectSettings, useUpdateMaxConcurrentTasks, useUpdateReuseSandbox } from "~/lib/settings-query";
+import {
+  useProjectSettings,
+  useReloadProjectsConfig,
+  useUpdateMaxConcurrentTasks,
+  useUpdateReuseSandbox,
+} from "~/lib/settings-query";
 import { cn } from "~/lib/utils";
+import { LAST_PROJECT_STORAGE_KEY } from "./index";
 
-export const Route = createFileRoute("/settings")({
-  component: SettingsPage,
+export const Route = createFileRoute("/projects/$slug/settings")({
+  component: ProjectSettingsPage,
 });
 
 const PROVIDER_LABEL: Record<Provider, string> = { CLOUDFLARE: "Cloudflare", RENDER: "Render" };
 
-function SettingsPage() {
-  const query = useProjectSettings();
+function ProjectSettingsPage() {
+  const { slug } = Route.useParams();
+  const query = useProjectSettings(slug);
+  const reload = useReloadProjectsConfig();
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(LAST_PROJECT_STORAGE_KEY, slug);
+    }
+  }, [slug]);
 
   return (
     <div className="flex flex-col gap-3 p-4 lg:p-6">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-[13px] text-muted-foreground">
-            <span>AI powered SDLC</span>
+            <Link to="/projects/$slug" params={{ slug }} className="hover:text-foreground hover:underline">
+              {query.data?.project.name ?? slug}
+            </Link>
             <span aria-hidden>/</span>
             <span className="font-medium text-foreground">Settings</span>
           </nav>
@@ -33,12 +49,29 @@ function SettingsPage() {
             Everything on this page is read from the control plane and the local sdlc.config.ts at request time. Nothing is hardcoded in the UI.
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={() => void query.refetch()} disabled={query.isFetching}>
-          <RefreshCw className={cn(query.isFetching && "animate-spin")} /> Re-read
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => reload.mutate()} disabled={reload.isPending}>
+            <RotateCw className={cn(reload.isPending && "animate-spin")} /> Reload config
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => void query.refetch()} disabled={query.isFetching}>
+            <RefreshCw className={cn(query.isFetching && "animate-spin")} /> Re-read
+          </Button>
+        </div>
       </header>
 
-      {query.isPending && <p className="text-sm text-muted-foreground">Reading the Project…</p>}
+      {reload.data && !reload.data.ok && (
+        <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+          Config reload failed: {reload.data.error}
+        </div>
+      )}
+      {reload.data && reload.data.ok && (
+        <div role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+          Reloaded {reload.data.projects.length} project(s) from {reload.data.source}
+          {reload.data.changedSlugs.length > 0 ? ` · updated: ${reload.data.changedSlugs.join(", ")}` : " · no manifest changes"}.
+        </div>
+      )}
+
+      {query.isPending && <p className="text-sm text-muted-foreground">Reading Project "{slug}"…</p>}
       {query.isError && (
         <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
           Could not read the Project: {query.error.message}
@@ -65,8 +98,9 @@ function SettingsView({ settings }: { settings: ProjectSettings }) {
           <div className="min-w-0">
             <p className="text-sm font-medium text-amber-800">Project config missing or invalid</p>
             <p className="mt-0.5 text-sm text-amber-800">
-              The control plane cannot prepare a Workspace, run Checks, or run end-to-end tests until <span className="font-mono text-xs">sdlc.config.ts</span>{" "}
-              loads cleanly (edit it, then POST <span className="font-mono text-xs">/project/config/reload</span> or restart the API).
+              The control plane cannot prepare a Workspace, run Checks, or run end-to-end tests until{" "}
+              <span className="font-mono text-xs">sdlc.config.ts</span> loads cleanly (edit it, then click Reload config or POST{" "}
+              <span className="font-mono text-xs">/projects/reload</span>).
             </p>
             <pre className="mt-2 whitespace-pre-wrap break-words rounded-lg bg-amber-100/60 px-2 py-1.5 font-mono text-xs text-amber-900">{manifest.error}</pre>
           </div>
@@ -77,6 +111,9 @@ function SettingsView({ settings }: { settings: ProjectSettings }) {
         <Section title="Project">
           <dl className="grid grid-cols-[8rem_minmax(0,1fr)] gap-y-2.5 text-sm">
             <Row label="Name">{project.name}</Row>
+            <Row label="Slug">
+              <span className="font-mono text-xs">{project.slug}</span>
+            </Row>
             <Row label="Repository">
               <a href={repoUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-mono text-xs text-blue-700 hover:underline">
                 {project.owner}/{project.repo} <ExternalLink className="h-3 w-3" aria-hidden />
@@ -185,11 +222,11 @@ function SettingsView({ settings }: { settings: ProjectSettings }) {
         </Section>
 
         <Section title="Concurrency" aside={<span className="text-xs text-muted-foreground">Starts are blocked at the limit</span>}>
-          <ConcurrencyEditor settings={settings} />
+          <ConcurrencyEditor key={project.id} settings={settings} />
         </Section>
 
         <Section title="Sandbox reuse" aside={<span className="text-xs text-muted-foreground">Faster runs, one container per task</span>}>
-          <ReuseSandboxEditor settings={settings} />
+          <ReuseSandboxEditor key={project.id} settings={settings} />
         </Section>
 
         <Section title="Runtime" className="lg:col-span-2">
@@ -216,7 +253,7 @@ function SettingsView({ settings }: { settings: ProjectSettings }) {
               {settings.activeTasks.length > 0 ? (
                 <ul className="flex flex-col gap-1">
                   <li className="text-xs text-muted-foreground">
-                    {settings.activeTaskCount} of {settings.maxConcurrentTasks} slots used
+                    {settings.activeTaskCount} of {settings.maxConcurrentTasks} project slots used ({settings.globalActiveTaskCount} of {settings.maxGlobalConcurrentTasks} host-wide)
                   </li>
                   {settings.activeTasks.map((t) => (
                     <li key={t.id}>
@@ -227,7 +264,9 @@ function SettingsView({ settings }: { settings: ProjectSettings }) {
                   ))}
                 </ul>
               ) : (
-                <span className="text-muted-foreground">None. A new Task can be started.</span>
+                <span className="text-muted-foreground">
+                  None for this project ({settings.globalActiveTaskCount} of {settings.maxGlobalConcurrentTasks} host-wide).
+                </span>
               )}
             </Row>
           </dl>
@@ -300,6 +339,10 @@ function StackView({ title, stack }: { title: string; stack: NonNullable<Extract
   );
 }
 
+function formatEnvValue(value: EnvValue): string {
+  return typeof value === "string" ? value : `<env:${value.env}${value.optional ? "?" : ""}>`;
+}
+
 function E2EView({ e2e }: { e2e: Extract<ProjectSettings["manifest"], { ok: true }>["manifest"]["e2e"] }) {
   if (!e2e) {
     return (
@@ -323,7 +366,6 @@ function E2EView({ e2e }: { e2e: Extract<ProjectSettings["manifest"], { ok: true
           <dd className="font-mono text-xs">{e2e.cwd}</dd>
         </div>
         <div>
-          {/* testDir is Playwright's own testDir, relative to cwd; show it joined so it reads as a real repo path. */}
           <dt className="text-xs text-muted-foreground">Spec directory</dt>
           <dd className="font-mono text-xs">
             {joinPath(e2e.cwd, e2e.testDir)} <span className="font-sans text-muted-foreground">({e2e.testDir} relative to the working directory)</span>
@@ -332,7 +374,11 @@ function E2EView({ e2e }: { e2e: Extract<ProjectSettings["manifest"], { ok: true
         <div>
           <dt className="text-xs text-muted-foreground">Environment</dt>
           <dd className="font-mono text-xs">
-            {env.length === 0 ? <span className="font-sans text-muted-foreground">None</span> : env.map(([k, v]) => <div key={k}>{`${k}=${v}`}</div>)}
+            {env.length === 0 ? (
+              <span className="font-sans text-muted-foreground">None</span>
+            ) : (
+              env.map(([k, v]) => <div key={k}>{`${k}=${formatEnvValue(v)}`}</div>)
+            )}
           </dd>
         </div>
         <div>
@@ -384,7 +430,7 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
 function ConcurrencyEditor({ settings }: { settings: ProjectSettings }) {
   const [value, setValue] = useState(String(settings.maxConcurrentTasks));
   const [savedValue, setSavedValue] = useState(settings.maxConcurrentTasks);
-  const mutation = useUpdateMaxConcurrentTasks();
+  const mutation = useUpdateMaxConcurrentTasks(settings.project.id);
   const dirty = value !== String(savedValue ?? settings.maxConcurrentTasks);
 
   const parsed = Number.parseInt(value, 10);
@@ -393,8 +439,8 @@ function ConcurrencyEditor({ settings }: { settings: ProjectSettings }) {
   return (
     <div className="flex flex-col gap-2 text-sm">
       <p className="text-muted-foreground">
-        {settings.activeTaskCount} of {settings.maxConcurrentTasks} task slots in use. Lowering the limit never stops running Tasks; it only
-        blocks new Starts.
+        {settings.activeTaskCount} of {settings.maxConcurrentTasks} project slots in use ({settings.globalActiveTaskCount} of{" "}
+        {settings.maxGlobalConcurrentTasks} host-wide). Lowering the limit never stops running Tasks; it only blocks new Starts.
       </p>
       <div className="flex flex-wrap items-center gap-2">
         <label htmlFor="max-concurrent-tasks" className="text-xs text-muted-foreground">
@@ -436,7 +482,7 @@ function ConcurrencyEditor({ settings }: { settings: ProjectSettings }) {
 }
 
 function ReuseSandboxEditor({ settings }: { settings: ProjectSettings }) {
-  const mutation = useUpdateReuseSandbox();
+  const mutation = useUpdateReuseSandbox(settings.project.id);
   const checked = settings.reuseSandbox ?? true;
 
   return (

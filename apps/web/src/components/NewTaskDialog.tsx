@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { CreateTaskInputSchema, DUPLICATE_TASK_ERROR_CODE } from "@sdlc-ai/shared";
 import { Button } from "~/components/ui/button";
@@ -9,17 +9,37 @@ import { Textarea } from "~/components/ui/textarea";
 import { useApi } from "~/lib/api-context";
 import { upsertTask } from "~/lib/board-query";
 import { ApiRequestError } from "~/lib/api";
+import { projectsQueryKey, useProjectsQuery } from "~/lib/settings-query";
 
-export function NewTaskDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+export function NewTaskDialog({
+  open,
+  onOpenChange,
+  defaultProjectId,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  defaultProjectId?: string;
+}) {
   const { client } = useApi();
   const queryClient = useQueryClient();
+  const projectsQuery = useProjectsQuery();
+  const activeProjects = (projectsQuery.data ?? []).filter((p) => p.active);
+  const [projectId, setProjectId] = useState(defaultProjectId ?? "");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [issueRef, setIssueRef] = useState("");
   const [pullRef, setPullRef] = useState("");
   const [force, setForce] = useState(false);
+
+  useEffect(() => {
+    if (defaultProjectId) setProjectId(defaultProjectId);
+    else if (!projectId && activeProjects[0]) setProjectId(activeProjects[0].id);
+  }, [defaultProjectId, activeProjects, projectId]);
+
+  const effectiveProjectId = projectId || defaultProjectId || activeProjects[0]?.id || "";
   const usingExisting = pullRef.trim().length > 0 || issueRef.trim().length > 0;
   const parsed = CreateTaskInputSchema.safeParse({
+    projectId: effectiveProjectId,
     title: title || undefined,
     description,
     issueRef: issueRef.trim() || undefined,
@@ -34,6 +54,7 @@ export function NewTaskDialog({ open, onOpenChange }: { open: boolean; onOpenCha
     },
     onSuccess: (task) => {
       upsertTask(queryClient, task);
+      void queryClient.invalidateQueries({ queryKey: projectsQueryKey });
       setTitle("");
       setDescription("");
       setIssueRef("");
@@ -61,6 +82,24 @@ export function NewTaskDialog({ open, onOpenChange }: { open: boolean; onOpenCha
               description are copied from GitHub.
             </DialogDescription>
           </DialogHeader>
+          {activeProjects.length > 0 && (
+            <div className="grid gap-2">
+              <Label htmlFor="new-task-project">Project</Label>
+              <select
+                id="new-task-project"
+                value={effectiveProjectId}
+                onChange={(e) => setProjectId(e.target.value)}
+                disabled={activeProjects.length <= 1}
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {activeProjects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.owner}/{p.repo})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="grid gap-2">
             <Label htmlFor="new-task-issue">Existing GitHub Issue (optional)</Label>
             <Input

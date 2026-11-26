@@ -1,102 +1,79 @@
 import { serve } from "@hono/node-server";
-import { eq } from "drizzle-orm";
-import type { Provider } from "@sdlc-ai/shared";
 import { ArtifactStore } from "./artifacts/store.js";
 import { closeDb, db, runMigrations } from "./db/index.js";
 import { projects } from "./db/schema.js";
 import { env } from "./env.js";
-import { FakeDeployProvider, FakeGitHubService, FakeSandboxRunner } from "./fakes/index.js";
-import { CloudflareDeployProvider } from "./integrations/cloudflare.js";
-import { getConfigEpoch, loadLocalConfig, startConfigWatch } from "./integrations/config-loader.js";
-import { OctokitGitHubService } from "./integrations/github.js";
-import { loadProjectRow } from "./integrations/project-row.js";
-import { RenderDeployProvider } from "./integrations/render.js";
+import { FakeSandboxRunner } from "./fakes/index.js";
+import { startConfigWatch } from "./integrations/config-loader.js";
+import { ProjectRegistry } from "./integrations/project-registry.js";
 import { WorkflowService } from "./pipeline/workflow.js";
-import type { DeployProvider, GitHubService, SandboxRunner } from "./ports.js";
+import type { SandboxRunner } from "./ports.js";
+import { createApp } from "./routes/app.js";
 import { DockerSandboxRunner } from "./sandbox/docker.js";
 import { checkSandboxImage } from "./sandbox/image-stamp.js";
 import { TaskSandboxPool } from "./sandbox/task-pool.js";
-import { createApp } from "./routes/app.js";
 
 const STAGING_POLL_MS = 5_000;
 
-async function seedProject() {
-  const row = await loadProjectRow(env);
-  const values = {
-    name: row.name,
-    owner: row.owner,
-    repo: row.repo,
-    defaultBranch: row.defaultBranch,
-    deployTargets: row.deployTargets,
-  };
-  const [existing] = await db.select().from(projects).limit(1);
-  if (existing) {
-    await db.update(projects).set(values).where(eq(projects.id, existing.id));
-    return;
-  }
-  await db.insert(projects).values(values);
-}
-
-function wireIntegrations(): { sandboxes: SandboxRunner; github: GitHubService; deployProviders: Partial<Record<Provider, DeployProvider>> } {
+function createSandboxPool(): { sandboxes: TaskSandboxPool; fakeRunner: FakeSandboxRunner | null } {
   if (env.SDLC_FAKES) {
     console.warn("[api] SDLC_FAKES=true — Docker, GitHub and deploy providers are in-memory fakes");
-    const github = new FakeGitHubService();
-    return {
-      github,
-      sandboxes: new TaskSandboxPool(new FakeSandboxRunner(github)),
-      deployProviders: {
-        CLOUDFLARE: new FakeDeployProvider(env.FE_ORIGIN ?? "https://fe.stage.example"),
-        RENDER: new FakeDeployProvider(env.BE_ORIGIN ?? "https://be.stage.example"),
-      },
-    };
+    const fakeRunner = new FakeSandboxRunner();
+    return { sandboxes: new TaskSandboxPool(fakeRunner as SandboxRunner), fakeRunner };
   }
-
-  const missing = (["GITHUB_TOKEN", "OPENCODE_API_KEY"] as const).filter((k) => !env[k]);
-  if (missing.length) {
-    console.error(`[api] missing required environment: ${missing.join(", ")} (or set SDLC_FAKES=true)`);
+  if (!env.OPENCODE_API_KEY) {
+    console.error("[api] missing required environment: OPENCODE_API_KEY (or set SDLC_FAKES=true)");
     process.exit(1);
   }
-
-  const deployProviders: Partial<Record<Provider, DeployProvider>> = {};
-  if (env.RENDER_API_KEY && env.RENDER_SERVICE_ID) {
-    deployProviders.RENDER = new RenderDeployProvider(env.RENDER_API_KEY, env.RENDER_SERVICE_ID, env.BE_ORIGIN ?? null);
-  }
-  if (env.CF_API_TOKEN && env.CF_ACCOUNT_ID && env.CF_WORKER_NAME) {
-    deployProviders.CLOUDFLARE = new CloudflareDeployProvider(env.CF_API_TOKEN, env.CF_ACCOUNT_ID, env.CF_WORKER_NAME, env.FE_ORIGIN ?? null);
-  }
   return {
-    github: new OctokitGitHubService(env.GITHUB_TOKEN!, env.GITHUB_OWNER, env.GITHUB_REPO),
     sandboxes: new TaskSandboxPool(new DockerSandboxRunner(env.SANDBOX_IMAGE, env.DOCKER_BIN)),
-    deployProviders,
+    fakeRunner: null,
   };
 }
 
 async function main() {
   await runMigrations();
-  await seedProject();
 
-  // Prime the local-config cache. Warn-only; never exits.
-  {
-    const read = await loadLocalConfig();
-    if (read.ok) console.log(`[api] local config ${read.source} rev ${read.hash.slice(0, 12)} (epoch ${getConfigEpoch()})`);
-    else console.warn(`[api] local config unavailable: ${read.error}`);
+  const { sandboxes, fakeRunner } = createSandboxPool();
+  const registry = new ProjectRegistry({
+    fakes: env.SDLC_FAKES,
+    env,
+    onFakeGitHub: fakeRunner ? (cloneUrl, gh) => fakeRunner.registerGitHub(cloneUrl, gh) : undefined,
+  });
+
+  const configRead = await registry.syncProjects();
+  if (configRead.ok) {
+    const summary = configRead.list.map((p) => `${p.slug} (${p.hash.slice(0, 12)})`).join(", ");
+    console.log(`[api] loaded ${configRead.list.length} project(s) from ${configRead.source}: ${summary}`);
+  } else {
+    console.warn(`[api] local config unavailable: ${configRead.error}`);
   }
 
-  const workflow = new WorkflowService({ ...wireIntegrations(), artifacts: new ArtifactStore(env.ARTIFACTS_DIR) });
+  const workflow = new WorkflowService({
+    sandboxes,
+    forProject: (id) => registry.forProject(id),
+    artifacts: new ArtifactStore(env.ARTIFACTS_DIR),
+  });
 
-  // Config change bumps the epoch into the setup hash and drops warm containers.
+  // Config change bumps per-project epochs and drops warm containers only for changed slugs.
   const stopConfigWatch = startConfigWatch({
-    onReload: async (info) => {
-      const pool = workflow.deps.sandboxes instanceof TaskSandboxPool ? workflow.deps.sandboxes : null;
-      if (pool) await pool.clear().catch(() => undefined);
-      console.log(`[config] ${info.source} changed → rev ${info.hash.slice(0, 12)} (epoch ${info.epoch}); warm containers cleared`);
+    onReload: async (changedSlugs, read) => {
+      await registry.syncProjects(read);
+      await workflow.clearWarmSandboxesForSlugs(changedSlugs);
+      console.log(`[config] ${read.source} changed [${changedSlugs.join(", ")}]; warm containers cleared for changed projects`);
     },
   });
-  const app = createApp(workflow);
 
-  const github = await workflow.deps.github.connectionStatus();
-  if (github.ok) console.log(`[api] GitHub connected as ${github.login} to ${env.GITHUB_OWNER}/${env.GITHUB_REPO}`);
-  else console.warn(`[api] GitHub check failed: ${github.error} — creating Tasks and Planning will fail until GITHUB_TOKEN is fixed`);
+  const app = createApp(workflow, registry);
+
+  const dbProjects = await db.select().from(projects);
+  for (const p of dbProjects) {
+    if (!p.active) continue;
+    const runtime = await registry.forProject(p.id);
+    const github = await runtime.github.connectionStatus();
+    if (github.ok) console.log(`[api] [${p.slug}] GitHub connected as ${github.login} to ${p.owner}/${p.repo}`);
+    else console.warn(`[api] [${p.slug}] GitHub check failed: ${github.error}`);
+  }
 
   // Warn only: a stale image still runs, it just silently drops tooling the Dockerfile adds.
   if (!env.SDLC_FAKES) {
@@ -110,7 +87,7 @@ async function main() {
   const ticker = setInterval(() => void workflow.pollStaging().catch((e) => console.error("[api] staging poll failed", e)), STAGING_POLL_MS);
 
   const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
-    console.log(`[api] listening on http://localhost:${info.port} (project ${env.GITHUB_OWNER}/${env.GITHUB_REPO})`);
+    console.log(`[api] listening on http://localhost:${info.port} (${dbProjects.filter((p) => p.active).length} active project(s))`);
   });
 
   const shutdown = () => {

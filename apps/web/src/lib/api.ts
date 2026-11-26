@@ -5,6 +5,8 @@ import {
   BoardTaskSchema,
   DeleteTaskResultSchema,
   ProjectSettingsSchema,
+  ProjectSummaryListSchema,
+  ReloadProjectsResultSchema,
   ResetDemoResultSchema,
   TaskDetailSchema,
   type AnswerQuestionInput,
@@ -15,6 +17,8 @@ import {
   type DeleteTaskInput,
   type DeleteTaskResult,
   type ProjectSettings,
+  type ProjectSummary,
+  type ReloadProjectsResult,
   type ResetDemoResult,
   type SendReviewBackInput,
   type TaskDetail,
@@ -35,12 +39,14 @@ export class ApiRequestError extends Error {
 }
 
 export interface ApiClient {
-  listTasks(): Promise<BoardTask[]>;
+  listProjects(): Promise<ProjectSummary[]>;
+  reloadProjectsConfig(): Promise<ReloadProjectsResult>;
+  listTasks(projectId: string): Promise<BoardTask[]>;
   createTask(input: CreateTaskInput): Promise<BoardTask>;
   startTask(taskId: string): Promise<BoardTask>;
   answerQuestion(taskId: string, questionId: string, input: AnswerQuestionInput): Promise<BoardTask>;
-  runDemo(): Promise<BoardTask>;
-  resetDemo(): Promise<ResetDemoResult>;
+  runDemo(projectId: string): Promise<BoardTask>;
+  resetDemo(projectId: string): Promise<ResetDemoResult>;
   /** The Task with every Agent Run, Test Run, Question, Review, Approval, Deployment, Artifact, and Event. */
   getTask(taskId: string): Promise<TaskDetail>;
   retryTask(taskId: string): Promise<TaskDetail>;
@@ -58,12 +64,12 @@ export interface ApiClient {
   updateReview(taskId: string, reviewId: string, input: UpdateReviewInput): Promise<TaskDetail>;
   /** Send one (possibly edited) Review back to the Developer. Rejects the pending Approval and moves to DEVELOPMENT. */
   sendReviewBack(taskId: string, reviewId: string, input: SendReviewBackInput): Promise<TaskDetail>;
-  /** The Project, its GitHub connection, Deploy Targets, and the Manifest as read from the repository. */
-  getProjectSettings(): Promise<ProjectSettings>;
+  /** The Project, its GitHub connection, Deploy Targets, and the Manifest as read from sdlc.config.ts. */
+  getProjectSettings(projectId: string): Promise<ProjectSettings>;
   /** Updates the max concurrent Tasks limit. Returns the refreshed Settings. */
-  updateMaxConcurrentTasks(limit: number): Promise<ProjectSettings>;
+  updateMaxConcurrentTasks(projectId: string, limit: number): Promise<ProjectSettings>;
   /** Toggles single-container reuse for a Task. Returns the refreshed Settings. */
-  updateReuseSandbox(reuse: boolean): Promise<ProjectSettings>;
+  updateReuseSandbox(projectId: string, reuse: boolean): Promise<ProjectSettings>;
   /** Reads a text Artifact (a LOG or DIFF) in full. */
   fetchArtifactText(taskId: string, artifactId: string): Promise<string>;
   /** Absolute URL that streams an Artifact's bytes; used for images, reports, and downloads. */
@@ -74,8 +80,8 @@ export interface ApiClient {
    * the relative `data/*.webm` attachment links inside the report HTML resolve.
    */
   testRunReportUrl(taskId: string, testRunId: string, filePath: string): string;
-  /** Absolute URL of the SSE endpoint; scoped to one Task when `taskId` is given. */
-  eventsUrl(taskId?: string): string;
+  /** Absolute URL of the SSE endpoint; optionally scoped by `projectId` and/or `taskId`. */
+  eventsUrl(scope?: { projectId?: string; taskId?: string }): string;
 }
 
 export interface ApiClientOptions {
@@ -101,12 +107,14 @@ export function createApiClient({ origin, fetch = globalThis.fetch }: ApiClientO
     request(path, schema, { method: "POST", body: body === undefined ? undefined : JSON.stringify(body) });
 
   return {
-    listTasks: () => request(API_PATHS.tasks, BoardTaskListSchema),
+    listProjects: () => request(API_PATHS.projects, ProjectSummaryListSchema),
+    reloadProjectsConfig: () => post(API_PATHS.reloadProjectsConfig, ReloadProjectsResultSchema),
+    listTasks: (projectId) => request(`${API_PATHS.tasks}?projectId=${encodeURIComponent(projectId)}`, BoardTaskListSchema),
     createTask: (input) => post(API_PATHS.tasks, BoardTaskSchema, input),
     startTask: (taskId) => post(API_PATHS.startTask(taskId), BoardTaskSchema),
     answerQuestion: (taskId, questionId, input) => post(API_PATHS.answerQuestion(taskId, questionId), BoardTaskSchema, input),
-    runDemo: () => post(API_PATHS.runDemo, BoardTaskSchema),
-    resetDemo: () => post(API_PATHS.resetDemo, ResetDemoResultSchema, { confirm: true }),
+    runDemo: (projectId) => post(API_PATHS.runDemo(projectId), BoardTaskSchema),
+    resetDemo: (projectId) => post(API_PATHS.resetDemo(projectId), ResetDemoResultSchema, { confirm: true }),
     getTask: (taskId) => request(API_PATHS.task(taskId), TaskDetailSchema),
     retryTask: (taskId) => post(API_PATHS.retryTask(taskId), TaskDetailSchema),
     retryWithNewBranchTask: (taskId) => post(API_PATHS.retryWithNewBranchTask(taskId), TaskDetailSchema),
@@ -117,14 +125,14 @@ export function createApiClient({ origin, fetch = globalThis.fetch }: ApiClientO
     decideReview: (taskId, reviewId, input) => post(API_PATHS.decideReview(taskId, reviewId), TaskDetailSchema, input),
     updateReview: (taskId, reviewId, input) => request(API_PATHS.updateReview(taskId, reviewId), TaskDetailSchema, { method: "PATCH", body: JSON.stringify(input) }),
     sendReviewBack: (taskId, reviewId, input) => post(API_PATHS.sendReviewBack(taskId, reviewId), TaskDetailSchema, input),
-    getProjectSettings: () => request(API_PATHS.project, ProjectSettingsSchema),
-    updateMaxConcurrentTasks: (limit: number) => {
+    getProjectSettings: (projectId) => request(API_PATHS.project(projectId), ProjectSettingsSchema),
+    updateMaxConcurrentTasks: (projectId, limit) => {
       const body: UpdateProjectSettingsInput = { maxConcurrentTasks: limit };
-      return request(API_PATHS.updateProjectSettings, ProjectSettingsSchema, { method: "PATCH", body: JSON.stringify(body) });
+      return request(API_PATHS.updateProjectSettings(projectId), ProjectSettingsSchema, { method: "PATCH", body: JSON.stringify(body) });
     },
-    updateReuseSandbox: (reuse: boolean) => {
+    updateReuseSandbox: (projectId, reuse) => {
       const body: UpdateProjectSettingsInput = { reuseSandbox: reuse };
-      return request(API_PATHS.updateProjectSettings, ProjectSettingsSchema, { method: "PATCH", body: JSON.stringify(body) });
+      return request(API_PATHS.updateProjectSettings(projectId), ProjectSettingsSchema, { method: "PATCH", body: JSON.stringify(body) });
     },
     fetchArtifactText: async (taskId, artifactId) => {
       const path = API_PATHS.artifactContent(taskId, artifactId);
@@ -134,7 +142,13 @@ export function createApiClient({ origin, fetch = globalThis.fetch }: ApiClientO
     },
     artifactContentUrl: (taskId, artifactId) => `${origin}${API_PATHS.artifactContent(taskId, artifactId)}`,
     testRunReportUrl: (taskId, testRunId, filePath) => `${origin}${testRunReportPath(taskId, testRunId, filePath)}`,
-    eventsUrl: (taskId) => `${origin}${API_PATHS.events}${taskId ? `?taskId=${encodeURIComponent(taskId)}` : ""}`,
+    eventsUrl: (scope) => {
+      const params = new URLSearchParams();
+      if (scope?.projectId) params.set("projectId", scope.projectId);
+      if (scope?.taskId) params.set("taskId", scope.taskId);
+      const qs = params.toString();
+      return `${origin}${API_PATHS.events}${qs ? `?${qs}` : ""}`;
+    },
   };
 }
 

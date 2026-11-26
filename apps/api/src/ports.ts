@@ -27,6 +27,7 @@ export interface Sandbox {
 
 export interface SandboxCreateOptions {
   name: string;
+  image?: string;
   // Named volume for OpenCode's session store. Only set for runs that must resume a session
   // started in an earlier Sandbox; the store is SQLite and does not tolerate concurrent Sandboxes.
   sessionVolume?: string;

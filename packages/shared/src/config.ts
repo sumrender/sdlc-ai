@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DeployTargetConfigSchema, type DeployTargetConfig } from "./domain";
+import { DeployTargetConfigSchema, MaxConcurrentTasksSchema, type DeployTargetConfig, type MaxConcurrentTasks } from "./domain";
 import {
   E2eSchema,
   ProjectManifestSchema,
@@ -8,12 +8,45 @@ import {
   type ProjectManifest,
 } from "./manifest";
 
+export const ProjectSlugSchema = z
+  .string()
+  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "slug must be lowercase kebab-case")
+  .min(1)
+  .max(64);
+export type ProjectSlug = z.infer<typeof ProjectSlugSchema>;
+
 export const RepositorySchema = z.object({
   owner: z.string().min(1),
   repo: z.string().min(1),
   defaultBranch: z.string().min(1).default("main"),
 });
 export type Repository = z.infer<typeof RepositorySchema>;
+
+export const GitHubProjectConfigSchema = z.object({
+  tokenEnv: z.string().min(1).default("GITHUB_TOKEN"),
+});
+export type GitHubProjectConfig = z.infer<typeof GitHubProjectConfigSchema>;
+
+export const RenderProviderConfigSchema = z.object({
+  serviceId: z.string().min(1),
+  apiKeyEnv: z.string().min(1).default("RENDER_API_KEY"),
+  origin: z.string().min(1).nullable().default(null),
+});
+export type RenderProviderConfig = z.infer<typeof RenderProviderConfigSchema>;
+
+export const CloudflareProviderConfigSchema = z.object({
+  workerName: z.string().min(1),
+  apiTokenEnv: z.string().min(1).default("CF_API_TOKEN"),
+  accountIdEnv: z.string().min(1).default("CF_ACCOUNT_ID"),
+  origin: z.string().min(1).nullable().default(null),
+});
+export type CloudflareProviderConfig = z.infer<typeof CloudflareProviderConfigSchema>;
+
+export const DeployProvidersConfigSchema = z.object({
+  render: RenderProviderConfigSchema.optional(),
+  cloudflare: CloudflareProviderConfigSchema.optional(),
+});
+export type DeployProvidersConfig = z.infer<typeof DeployProvidersConfigSchema>;
 
 export const ModelsSchema = z.object({
   developer: z.string().min(1),
@@ -38,21 +71,42 @@ const StacksSchema = z.object({
 });
 
 export const ProjectConfigSchema = z.object({
+  slug: ProjectSlugSchema,
+  name: z.string().min(1).optional(),
   version: z.number().int().optional(),
   repository: RepositorySchema,
+  github: GitHubProjectConfigSchema.default({}),
   root: RootSchema.default({}),
   stacks: StacksSchema.default({}),
   e2e: E2eSchema.nullable().default(null),
   deploy: z.array(DeployTargetConfigSchema).default([]),
+  deployProviders: DeployProvidersConfigSchema.default({}),
   models: ModelsSchema.optional(),
   sandbox: SandboxSchema.optional(),
-  controlPlaneUrl: z.string().min(1).optional(),
+  maxConcurrentTasks: MaxConcurrentTasksSchema.optional(),
 });
 export type ProjectConfig = z.output<typeof ProjectConfigSchema>;
 export type ProjectConfigInput = z.input<typeof ProjectConfigSchema>;
 
-export function defineProject(input: ProjectConfigInput): ProjectConfig {
-  return ProjectConfigSchema.parse(input);
+export const ProjectsConfigSchema = z
+  .array(ProjectConfigSchema)
+  .min(1, "At least one project must be configured")
+  .superRefine((projects, ctx) => {
+    const seen = new Set<string>();
+    projects.forEach((p, index) => {
+      if (seen.has(p.slug)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, "slug"],
+          message: `Duplicate project slug "${p.slug}" — each project must have a unique slug`,
+        });
+      }
+      seen.add(p.slug);
+    });
+  });
+
+export function defineProjects(input: ProjectConfigInput[]): ProjectConfig[] {
+  return ProjectsConfigSchema.parse(input);
 }
 
 export function toProjectManifest(config: ProjectConfig): ProjectManifest {
@@ -68,38 +122,44 @@ export function toProjectManifest(config: ProjectConfig): ProjectManifest {
 
 // ---- Project row ------------------------------------------------------------
 
-/** Origins for deploy targets whose config url is null (infra lives in env, never in config). */
-export interface ProjectRowEnv {
-  FE_ORIGIN?: string | null;
-  BE_ORIGIN?: string | null;
-}
-
 export interface ProjectRowValues {
+  slug: string;
   name: string;
   owner: string;
   repo: string;
   defaultBranch: string;
   deployTargets: DeployTargetConfig[];
+  maxConcurrentTasks?: MaxConcurrentTasks;
+  reuseSandbox?: boolean;
 }
 
 /**
- * Single builder for the projects row. Boot seeding (index.ts), db:seed, and
- * the web fixture all go through here so the row cannot drift between them.
- * A null config url resolves from the env origin for the same target.
+ * Single builder for a projects row. Boot syncing, db:seed, and the web
+ * fixture all go through here so the row cannot drift between them.
+ * A null deploy.url resolves from deployProviders.<provider>.origin.
  */
-export function buildProjectRow(config: ProjectConfig, env: ProjectRowEnv = {}): ProjectRowValues {
+export function buildProjectRow(config: ProjectConfig): ProjectRowValues {
   const deployTargets = config.deploy.map((d) => {
     if (d.url != null) return d;
-    const fallback = d.target === "FE" ? env.FE_ORIGIN : d.target === "BE" ? env.BE_ORIGIN : undefined;
+    const fallback =
+      d.provider === "CLOUDFLARE"
+        ? config.deployProviders.cloudflare?.origin
+        : d.provider === "RENDER"
+          ? config.deployProviders.render?.origin
+          : undefined;
     return { ...d, url: fallback ?? null };
   });
-  return {
-    name: config.repository.repo,
+  const row: ProjectRowValues = {
+    slug: config.slug,
+    name: config.name ?? config.repository.repo,
     owner: config.repository.owner,
     repo: config.repository.repo,
     defaultBranch: config.repository.defaultBranch,
     deployTargets,
   };
+  if (config.maxConcurrentTasks !== undefined) row.maxConcurrentTasks = config.maxConcurrentTasks;
+  if (config.sandbox?.reuse !== undefined) row.reuseSandbox = config.sandbox.reuse;
+  return row;
 }
 
 // ---- Deploy overlap ---------------------------------------------------------

@@ -1,13 +1,13 @@
 # AI-Native SD
 
-A single-context control plane: a human hands a software task to an agent, and the task moves through a fixed pipeline of stages, each gated, until it reaches staging. Humans intervene only at explicit decision points. This glossary defines the shared language for tasks, stages, agent execution, evidence, and human checkpoints.
+A multi-project control plane: a human hands a software task for a configured Project to an agent, and the task moves through a fixed pipeline of stages, each gated, until it reaches staging. Humans intervene only at explicit decision points. This glossary defines the shared language for projects, tasks, stages, agent execution, evidence, and human checkpoints.
 
 ## Language
 
 ### Work
 
 **Project**:
-The one thing the control plane operates on: a single GitHub repository plus its default branch. Holds the repository coordinates; is not the repository itself.
+A configured target repository (`slug`, GitHub owner/repo, default branch, manifest, and deploy targets) managed by the control plane. One control-plane instance operates across multiple Projects defined in `sdlc.config.ts`.
 _Avoid_: repo (when meaning the Project), workspace
 
 **Task**:

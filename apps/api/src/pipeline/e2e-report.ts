@@ -3,6 +3,7 @@ import { db } from "../db/index.js";
 import { artifacts, tasks, type TaskRow, type TestRunRow } from "../db/schema.js";
 import { env } from "../env.js";
 import { bus } from "../events/bus.js";
+import type { GitHubService } from "../ports.js";
 import type { Deps } from "./deps.js";
 
 export const E2E_MARKER = "<!-- sdlc-ai-e2e -->";
@@ -54,20 +55,21 @@ export async function postE2EReport(deps: Deps, input: E2EReportInput, log: (l: 
   const videoUrl = videoCount > 0 ? url : null;
   const body = buildE2EComment({ task, run, generatedSpecPath, taskUrl: url, videoCount });
 
-  const comments = await deps.github.listComments(task.pullRequestNumber);
+  const { github } = await deps.forProject(task.projectId);
+  const comments = await github.listComments(task.pullRequestNumber);
   const ours = comments.find((c) => c.body.includes(E2E_MARKER));
   let commentUrl: string;
   if (ours) {
-    await deps.github.updateComment(ours.id, body);
+    await github.updateComment(ours.id, body);
     commentUrl = `updated comment ${ours.id}`;
     log(`Updated E2E PR comment ${ours.id}`);
   } else {
-    const created = await deps.github.createComment(task.pullRequestNumber, body);
+    const created = await github.createComment(task.pullRequestNumber, body);
     commentUrl = created.url;
     log(`Posted E2E PR comment: ${created.url}`);
   }
 
-  await refreshPrBody(deps, task.pullRequestNumber, run, generatedSpecPath, videoCount, url, log);
+  await refreshPrBody(github, task.pullRequestNumber, run, generatedSpecPath, videoCount, url, log);
   await db
     .update(tasks)
     .set({ e2eReportCommentUrl: commentUrl, e2eReportVideoUrl: videoUrl, updatedAt: new Date() })
@@ -77,7 +79,7 @@ export async function postE2EReport(deps: Deps, input: E2EReportInput, log: (l: 
 }
 
 async function refreshPrBody(
-  deps: Deps,
+  github: GitHubService,
   pullNumber: number,
   run: TestRunRow,
   generatedSpecPath: string | null,
@@ -85,7 +87,7 @@ async function refreshPrBody(
   url: string,
   log: (l: string) => void,
 ): Promise<void> {
-  const current = await deps.github.getPullRequestBody(pullNumber).catch(() => "");
+  const current = await github.getPullRequestBody(pullNumber).catch(() => "");
   const section =
     `${BODY_SECTION_START}\n## Latest E2E\n` +
     `- ${run.status === "COMPLETED" && run.exitCode === 0 ? "✅ passed" : "❌ failed"}: ${run.passed != null ? `${run.passed} passed, ${run.failed ?? 0} failed` : "n/a"} (attempt ${run.attempt})\n` +
@@ -96,5 +98,5 @@ async function refreshPrBody(
     ? current.replace(new RegExp(`${BODY_SECTION_START}[\\s\\S]*?${BODY_SECTION_END}`), section)
     : `${current}\n\n${section}`;
   // Read-modify-write: HUMAN_REVIEW merge happens later-stage, no conflict expected.
-  await deps.github.updatePullRequestBody(pullNumber, next).catch((e) => log(`PR body refresh failed: ${(e as Error).message}`));
+  await github.updatePullRequestBody(pullNumber, next).catch((e) => log(`PR body refresh failed: ${(e as Error).message}`));
 }

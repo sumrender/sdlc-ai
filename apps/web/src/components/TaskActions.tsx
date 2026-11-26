@@ -5,7 +5,8 @@ import { retryAvailability, sendBackAvailability, stopAvailability, type TaskDet
 import { Button } from "~/components/ui/button";
 import { DeleteTaskDialog } from "~/components/DeleteTaskDialog";
 import { useApi } from "~/lib/api-context";
-import { tasksQueryKey } from "~/lib/board-query";
+import { allTasksQueryKey, tasksQueryKey } from "~/lib/board-query";
+import { projectsQueryKey } from "~/lib/settings-query";
 import { setTaskDetail } from "~/lib/task-query";
 
 export interface TaskActionsProps {
@@ -22,7 +23,8 @@ export function TaskActions({ task }: TaskActionsProps) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const onSuccess = (detail: TaskDetail) => {
     setTaskDetail(queryClient, detail);
-    void queryClient.invalidateQueries({ queryKey: tasksQueryKey });
+    void queryClient.invalidateQueries({ queryKey: tasksQueryKey(detail.projectId) });
+    void queryClient.invalidateQueries({ queryKey: projectsQueryKey });
   };
   const retry = useMutation({ mutationFn: () => client.retryTask(task.id), onSuccess });
   const retryNewBranch = useMutation({ mutationFn: () => client.retryWithNewBranchTask(task.id), onSuccess });
@@ -32,7 +34,7 @@ export function TaskActions({ task }: TaskActionsProps) {
     onSuccess,
     // A stopped Task must leave the board's RUNNING state immediately; the
     // SSE TASK_STATUS_CHANGED covers it, but not when the stream is down.
-    onError: () => void queryClient.invalidateQueries({ queryKey: tasksQueryKey }),
+    onError: () => void queryClient.invalidateQueries({ queryKey: allTasksQueryKey }),
   });
 
   const canRetry = retryAvailability(task);

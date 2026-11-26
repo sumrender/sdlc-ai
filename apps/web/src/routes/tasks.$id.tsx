@@ -87,7 +87,8 @@ function TaskDetailView({ task, live }: { task: TaskDetail; live: ReturnType<typ
   const [openLog, setOpenLog] = useState<OpenLog | null>(null);
   const [openArtifact, setOpenArtifact] = useState<Artifact | null>(null);
   const [questionOpen, setQuestionOpen] = useState(false);
-  const settings = useProjectSettings();
+  const settings = useProjectSettings(task.projectId);
+  const projectSlug = settings.data?.project.slug;
 
   const pendingQuestion = task.questions.find((q) => q.status === "PENDING") ?? null;
   // Only the current decision renders full-size; superseded REJECTEDs fold
@@ -107,9 +108,15 @@ function TaskDetailView({ task, live }: { task: TaskDetail; live: ReturnType<typ
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-[13px] text-muted-foreground">
-            <Link to="/" className="hover:text-foreground hover:underline">
-              Board
-            </Link>
+            {projectSlug ? (
+              <Link to="/projects/$slug" params={{ slug: projectSlug }} className="hover:text-foreground hover:underline">
+                {settings.data?.project.name ?? projectSlug}
+              </Link>
+            ) : (
+              <Link to="/" className="hover:text-foreground hover:underline">
+                Board
+              </Link>
+            )}
             <span aria-hidden>/</span>
             <span className="max-w-[40ch] truncate font-medium text-foreground">{task.title}</span>
           </nav>

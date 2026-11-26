@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
-  ProjectConfigSchema,
+  ProjectsConfigSchema,
   fullSetup,
   hashManifest,
   toProjectManifest,
@@ -11,39 +11,54 @@ import {
   type ProjectManifest,
 } from "@sdlc-ai/shared";
 import { ManifestError, errorMessage } from "../errors.js";
-import type { GitHubService } from "../ports.js";
 
 export { hashManifest };
 
-/** Project config lives in the local `sdlc.config.ts`. Failures return
- * `{ok:false,error}` — never process.exit. */
+/** Project configs live in the local `sdlc.config.ts`. Failures return `{ok:false,error}` — never process.exit. */
 export const LOCAL_CONFIG_SOURCE = "sdlc.config.ts" as const;
 
-export type LocalConfigOk = {
-  ok: true;
+export interface LoadedProjectConfig {
+  slug: string;
   config: ProjectConfig;
   manifest: ProjectManifest;
-  /** sha256 of the canonical manifest JSON: same content => same hash, any source. */
   hash: string;
+  loadedAt: string;
+  source: typeof LOCAL_CONFIG_SOURCE;
+  epoch: number;
+}
+
+export type LocalProjectsConfigOk = {
+  ok: true;
+  projects: Map<string, LoadedProjectConfig>;
+  list: LoadedProjectConfig[];
+  changedSlugs: string[];
   loadedAt: string;
   source: typeof LOCAL_CONFIG_SOURCE;
   path: string;
 };
-export type LocalConfigErr = { ok: false; error: string; path?: string };
-export type LocalConfigRead = LocalConfigOk | LocalConfigErr;
+
+export type LocalProjectsConfigErr = { ok: false; error: string; path?: string };
+export type LocalProjectsConfigRead = LocalProjectsConfigOk | LocalProjectsConfigErr;
 
 /** Minimal shape of a task row needed for config pinning (avoids importing db schema). */
 export interface TaskConfigPin {
   configHash?: string | null;
 }
 
-let currentHash: string | null = null;
-let currentLoadedAt: string | null = null;
-let currentSource: string | null = null;
-let epoch = 0;
+interface ProjectLoaderState {
+  hash: string;
+  loadedAt: string;
+  source: typeof LOCAL_CONFIG_SOURCE;
+  epoch: number;
+  config: ProjectConfig;
+  manifest: ProjectManifest;
+  snapshots: Map<string, ProjectManifest>;
+}
+
+const MAX_SNAPSHOTS_PER_PROJECT = 20;
+const stateBySlug = new Map<string, ProjectLoaderState>();
+let lastConfigError: string | null = null;
 let forceCounter = 0;
-/** hash -> manifest snapshots so reviewers in one stage share one manifest. */
-const snapshots = new Map<string, ProjectManifest>();
 
 /**
  * setupHash = sha256(configHash + JSON(fullSetup) + imageStamp).
@@ -56,46 +71,40 @@ export function computeSetupHash(manifest: ProjectManifest, configHash?: string 
     .digest("hex");
 }
 
-function noteResolved(hash: string, manifest: ProjectManifest, source: string): void {
+function recordSnapshot(snapshots: Map<string, ProjectManifest>, hash: string, manifest: ProjectManifest): void {
   snapshots.set(hash, manifest);
-  if (snapshots.size > 20) {
+  if (snapshots.size > MAX_SNAPSHOTS_PER_PROJECT) {
     const oldest = snapshots.keys().next().value;
     if (oldest !== undefined) snapshots.delete(oldest);
   }
-  if (hash !== currentHash) {
-    currentHash = hash;
-    currentLoadedAt = new Date().toISOString();
-    currentSource = source;
-    epoch += 1;
-  }
 }
 
-/** Pinned snapshot for a task's configHash, if still cached. */
-export function getSnapshot(hash: string): ProjectManifest | undefined {
-  return snapshots.get(hash);
+export function getProjectConfigHash(slug: string): string | null {
+  return stateBySlug.get(slug)?.hash ?? null;
 }
 
-export function getCurrentConfigHash(): string | null {
-  return currentHash;
+export function getProjectConfigEpoch(slug: string): number {
+  return stateBySlug.get(slug)?.epoch ?? 0;
 }
 
-export function getConfigEpoch(): number {
-  return epoch;
+export function getProjectConfigMeta(slug: string): { hash: string; loadedAt: string; source: string } | null {
+  const s = stateBySlug.get(slug);
+  if (!s) return null;
+  return { hash: s.hash, loadedAt: s.loadedAt, source: s.source };
 }
 
-/** Rev metadata for the Settings label (`sdlc.config.ts · rev <hash> · <time>`). Null until the first successful read. */
-export function getCurrentConfigMeta(): { hash: string; loadedAt: string; source: string } | null {
-  if (currentHash === null || currentLoadedAt === null || currentSource === null) return null;
-  return { hash: currentHash, loadedAt: currentLoadedAt, source: currentSource };
+export function getLoadedProjectConfig(slug: string): ProjectConfig | null {
+  return stateBySlug.get(slug)?.config ?? null;
+}
+
+export function getLastConfigError(): string | null {
+  return lastConfigError;
 }
 
 /** Test hook: reset module state between cases. */
 export function resetConfigLoaderForTests(): void {
-  currentHash = null;
-  currentLoadedAt = null;
-  currentSource = null;
-  epoch = 0;
-  snapshots.clear();
+  stateBySlug.clear();
+  lastConfigError = null;
 }
 
 /** SDLC_CONFIG_PATH wins; otherwise walk up from cwd to the repo root. */
@@ -113,17 +122,19 @@ export function resolveConfigPath(): string | null {
   return null;
 }
 
-/** Import sdlc.config.ts -> safeParse -> manifest. Never throws, never exits. */
-export async function loadLocalConfig(options: { force?: boolean } = {}): Promise<LocalConfigRead> {
+/** Import sdlc.config.ts -> safeParse(ProjectsConfigSchema) -> per-slug state. Never throws, never exits. */
+export async function loadLocalProjectsConfig(options: { force?: boolean } = {}): Promise<LocalProjectsConfigRead> {
   const configPath = resolveConfigPath();
   if (!configPath) {
-    return { ok: false, error: "sdlc.config.ts not found (set SDLC_CONFIG_PATH or add sdlc.config.ts at the repo root)" };
+    lastConfigError = "sdlc.config.ts not found (set SDLC_CONFIG_PATH or add sdlc.config.ts at the repo root)";
+    return { ok: false, error: lastConfigError };
   }
   let mtimeMs = 0;
   try {
     mtimeMs = fs.statSync(configPath).mtimeMs;
   } catch (e) {
-    return { ok: false, error: `could not stat ${configPath}: ${errorMessage(e)}`, path: configPath };
+    lastConfigError = `could not stat ${configPath}: ${errorMessage(e)}`;
+    return { ok: false, error: lastConfigError, path: configPath };
   }
   try {
     if (options.force) forceCounter += 1;
@@ -137,65 +148,115 @@ export async function loadLocalConfig(options: { force?: boolean } = {}): Promis
     }
     let issues: string | null = null;
     for (const candidate of candidates) {
-      const parsed = ProjectConfigSchema.safeParse(candidate);
+      const parsed = ProjectsConfigSchema.safeParse(candidate);
       if (parsed.success) {
-        const manifest = toProjectManifest(parsed.data);
-        const hash = hashManifest(manifest);
-        noteResolved(hash, manifest, LOCAL_CONFIG_SOURCE);
-        return { ok: true, config: parsed.data, manifest, hash, loadedAt: currentLoadedAt ?? new Date().toISOString(), source: LOCAL_CONFIG_SOURCE, path: configPath };
+        lastConfigError = null;
+        const now = new Date().toISOString();
+        const nextSlugs = new Set(parsed.data.map((c) => c.slug));
+        const changedSlugs: string[] = [];
+
+        // Detect removed slugs and drop their active config state.
+        for (const existingSlug of [...stateBySlug.keys()]) {
+          if (!nextSlugs.has(existingSlug)) {
+            stateBySlug.delete(existingSlug);
+            changedSlugs.push(existingSlug);
+          }
+        }
+
+        const projectsMap = new Map<string, LoadedProjectConfig>();
+        const list: LoadedProjectConfig[] = [];
+        for (const config of parsed.data) {
+          const manifest = toProjectManifest(config);
+          const hash = hashManifest(manifest);
+          const prev = stateBySlug.get(config.slug);
+          const snapshots = prev?.snapshots ?? new Map<string, ProjectManifest>();
+          recordSnapshot(snapshots, hash, manifest);
+
+          const changed = !prev || prev.hash !== hash;
+          const epoch = changed ? (prev?.epoch ?? 0) + 1 : prev.epoch;
+          const loadedAt = changed ? now : prev.loadedAt;
+          if (changed) changedSlugs.push(config.slug);
+
+          const nextState: ProjectLoaderState = {
+            hash,
+            loadedAt,
+            source: LOCAL_CONFIG_SOURCE,
+            epoch,
+            config,
+            manifest,
+            snapshots,
+          };
+          stateBySlug.set(config.slug, nextState);
+
+          const entry: LoadedProjectConfig = {
+            slug: config.slug,
+            config,
+            manifest,
+            hash,
+            loadedAt,
+            source: LOCAL_CONFIG_SOURCE,
+            epoch,
+          };
+          projectsMap.set(config.slug, entry);
+          list.push(entry);
+        }
+
+        return {
+          ok: true,
+          projects: projectsMap,
+          list,
+          changedSlugs,
+          loadedAt: now,
+          source: LOCAL_CONFIG_SOURCE,
+          path: configPath,
+        };
       }
       issues = parsed.error.issues.map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`).join("; ");
     }
-    return { ok: false, error: `sdlc.config.ts failed validation: ${issues}`, path: configPath };
+    lastConfigError = `sdlc.config.ts failed validation: ${issues}`;
+    return { ok: false, error: lastConfigError, path: configPath };
   } catch (e) {
-    return { ok: false, error: `could not load ${configPath}: ${errorMessage(e)}`, path: configPath };
+    lastConfigError = `could not load ${configPath}: ${errorMessage(e)}`;
+    return { ok: false, error: lastConfigError, path: configPath };
   }
 }
 
-/**
- * Local-only loader (same throw contract as the old repo loader).
- * `github`/`ref` are kept for call-site compat but the repo is never read:
- * a broken local config throws so routes/project.ts renders the amber
- * Settings state instead of silently running a stale fallback.
- */
-export async function loadManifest(_github: GitHubService, _ref: string): Promise<ProjectManifest> {
-  const local = await loadLocalConfig();
-  if (local.ok) {
-    console.log(`[config] local ${local.source} rev ${local.hash.slice(0, 12)} (epoch ${epoch})`);
-    return local.manifest;
-  }
-  throw new ManifestError(local.error);
+/** Force a fresh import (busts the ESM cache), bumping epochs only for changed projects. Never throws. */
+export async function reloadLocalProjectsConfig(): Promise<LocalProjectsConfigRead> {
+  return loadLocalProjectsConfig({ force: true });
 }
 
-/** Task-pinned read: reviewers in one stage share the stamped snapshot. */
-export async function loadManifestForTask(github: GitHubService, ref: string, task?: TaskConfigPin | null): Promise<ProjectManifest> {
-  const pinned = task?.configHash ? getSnapshot(task.configHash) : undefined;
+/** Load the manifest for one configured project slug; throws ManifestError if missing/invalid. */
+export async function loadManifestForSlug(slug: string): Promise<ProjectManifest> {
+  const local = await loadLocalProjectsConfig();
+  if (!local.ok) throw new ManifestError(local.error);
+  const entry = local.projects.get(slug);
+  if (!entry) throw new ManifestError(`Project "${slug}" is not configured in ${LOCAL_CONFIG_SOURCE}`);
+  return entry.manifest;
+}
+
+/** Task-pinned read: reviewers in one stage share the stamped snapshot for that project. */
+export async function loadManifestForTask(slug: string, task?: TaskConfigPin | null): Promise<ProjectManifest> {
+  const pinned = task?.configHash ? stateBySlug.get(slug)?.snapshots.get(task.configHash) : undefined;
   if (pinned) return pinned;
-  return loadManifest(github, ref);
-}
-
-/** Force a fresh import (busts the ESM cache), bumps the epoch when the hash changes. Never throws. */
-export async function reloadLocalConfig(): Promise<LocalConfigRead> {
-  return loadLocalConfig({ force: true });
+  return loadManifestForSlug(slug);
 }
 
 /**
- * mtime watch on the local config file. Calls onReload only when the content
- * hash changes. Returns a stop function. Never throws, never exits.
+ * mtime watch on the local config file. Calls onReload only when at least one
+ * project is added, removed, or changes manifest hash. Returns a stop function.
  */
 export function startConfigWatch(options: {
-  onReload: (info: { hash: string; source: string; epoch: number }) => void | Promise<void>;
+  onReload: (changedSlugs: string[], read: LocalProjectsConfigOk) => void | Promise<void>;
   pollMs?: number;
 }): () => void {
   const configPath = resolveConfigPath() ?? path.resolve(process.cwd(), "sdlc.config.ts");
-  let lastHash = currentHash;
   const check = async () => {
-    const read = await loadLocalConfig().catch(
-      (): LocalConfigRead => ({ ok: false, error: "config check failed" }),
+    const read = await loadLocalProjectsConfig().catch(
+      (): LocalProjectsConfigRead => ({ ok: false, error: "config check failed" }),
     );
-    if (read.ok && read.hash !== lastHash) {
-      lastHash = read.hash;
-      await options.onReload({ hash: read.hash, source: read.source, epoch });
+    if (read.ok && read.changedSlugs.length > 0) {
+      await options.onReload(read.changedSlugs, read);
     }
   };
   const listener = (curr: fs.Stats, prev: fs.Stats) => {

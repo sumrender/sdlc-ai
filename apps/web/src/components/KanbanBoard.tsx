@@ -7,7 +7,7 @@ import { groupTasksByStage, startAvailability } from "~/lib/board";
 import { upsertTask, useBoardEvents, useTasksQuery } from "~/lib/board-query";
 import { useApi } from "~/lib/api-context";
 import { ApiRequestError } from "~/lib/api";
-import { useProjectSettings } from "~/lib/settings-query";
+import { projectsQueryKey, useProjectSettings } from "~/lib/settings-query";
 import { KanbanColumn } from "./KanbanColumn";
 import { TaskCard } from "./TaskCard";
 import {
@@ -22,24 +22,29 @@ import {
 } from "./ui/alert-dialog";
 
 export interface KanbanBoardProps {
+  projectId: string;
+  projectSlug: string;
   /** Called when any card is clicked; opens the Task detail page. */
   onOpenTask: (task: BoardTask) => void;
 }
 
-export function KanbanBoard({ onOpenTask }: KanbanBoardProps) {
+export function KanbanBoard({ projectId, projectSlug, onOpenTask }: KanbanBoardProps) {
   const { client } = useApi();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const tasksQuery = useTasksQuery();
-  const settingsQuery = useProjectSettings();
-  const streamStatus = useBoardEvents();
+  const tasksQuery = useTasksQuery(projectId);
+  const settingsQuery = useProjectSettings(projectId);
+  const streamStatus = useBoardEvents(projectId);
   const [limitAlert, setLimitAlert] = useState<string | null>(null);
 
   const openLimitAlert = (reason: string) => setLimitAlert(reason);
 
   const start = useMutation({
     mutationFn: (taskId: string) => client.startTask(taskId),
-    onSuccess: (task) => upsertTask(queryClient, task),
+    onSuccess: (task) => {
+      upsertTask(queryClient, task);
+      void queryClient.invalidateQueries({ queryKey: projectsQueryKey });
+    },
     onError: (error) => {
       if (error instanceof ApiRequestError && error.code === MAX_CONCURRENT_TASKS_ERROR_CODE) {
         openLimitAlert(error.message);
@@ -83,7 +88,7 @@ export function KanbanBoard({ onOpenTask }: KanbanBoardProps) {
             <AlertDialogAction
               onClick={() => {
                 setLimitAlert(null);
-                void navigate({ to: "/settings" });
+                void navigate({ to: "/projects/$slug/settings", params: { slug: projectSlug } });
               }}
             >
               Go to Settings

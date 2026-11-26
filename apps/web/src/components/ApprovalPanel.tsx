@@ -19,6 +19,7 @@ import { Label } from "~/components/ui/label";
 import { Textarea } from "~/components/ui/textarea";
 import { useApi } from "~/lib/api-context";
 import { tasksQueryKey } from "~/lib/board-query";
+import { projectsQueryKey } from "~/lib/settings-query";
 import { formatDateTime } from "~/lib/task-detail";
 import { setTaskDetail } from "~/lib/task-query";
 import { cn } from "~/lib/utils";
@@ -52,7 +53,8 @@ export function ApprovalPanel({ task, approval, defaultBranch }: ApprovalPanelPr
     },
     onSuccess: (detail) => {
       setTaskDetail(queryClient, detail);
-      void queryClient.invalidateQueries({ queryKey: tasksQueryKey });
+      void queryClient.invalidateQueries({ queryKey: tasksQueryKey(detail.projectId) });
+      void queryClient.invalidateQueries({ queryKey: projectsQueryKey });
       setRejecting(false);
       setFeedback("");
     },

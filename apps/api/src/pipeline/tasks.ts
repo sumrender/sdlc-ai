@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, ne } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ne } from "drizzle-orm";
 import type { Agent, RunStatus, Stage, TaskStatus } from "@sdlc-ai/shared";
 import { db } from "../db/index.js";
 import {
@@ -20,14 +20,34 @@ import {
 import { HttpError } from "../errors.js";
 import { bus } from "../events/bus.js";
 
-export async function getProject(): Promise<ProjectRow> {
-  const [project] = await db.select().from(projects).limit(1);
-  if (!project) throw new Error("Project row missing; API did not seed the project");
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isUuid(value: string): boolean {
+  return UUID_RE.test(value);
+}
+
+export async function findProject(idOrSlug: string): Promise<ProjectRow | null> {
+  const [project] = await db
+    .select()
+    .from(projects)
+    .where(isUuid(idOrSlug) ? eq(projects.id, idOrSlug) : eq(projects.slug, idOrSlug))
+    .limit(1);
+  return project ?? null;
+}
+
+export async function requireProject(idOrSlug: string): Promise<ProjectRow> {
+  const project = await findProject(idOrSlug);
+  if (!project) throw new HttpError(404, `Project not found: ${idOrSlug}`);
   return project;
+}
+
+export async function listProjects(): Promise<ProjectRow[]> {
+  return db.select().from(projects).orderBy(asc(projects.createdAt));
 }
 
 export async function getTask(id: string): Promise<TaskRow | null> {
   const [task] = await db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
+  if (task) bus.bindTaskProject(task.id, task.projectId);
   return task ?? null;
 }
 

@@ -69,7 +69,7 @@ export function useTaskLive(taskId: string): TaskLive {
     };
 
     const dispose = connectEventStream(
-      client.eventsUrl(taskId),
+      client.eventsUrl({ taskId }),
       {
         onMessage,
         onReconnect: () => void queryClient.invalidateQueries({ queryKey: key }),

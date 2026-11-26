@@ -12,7 +12,7 @@ import {
   type ChangeScope,
   type ProjectManifest,
 } from "./manifest.js";
-import { buildProjectRow, defineProject, deployOverlapWarnings, hashManifest, toProjectManifest } from "./config.js";
+import { buildProjectRow, defineProjects, deployOverlapWarnings, hashManifest, toProjectManifest } from "./config.js";
 
 const MANIFEST_JSON_URL = new URL("../../../.sdlc/manifest.json", import.meta.url);
 
@@ -22,14 +22,17 @@ function loadJsonManifest(): ProjectManifest {
 }
 
 function fromBuilder(manifest: ProjectManifest): ProjectManifest {
-  const config = defineProject({
-    version: manifest.version,
-    repository: { owner: "sumrender", repo: "meme", defaultBranch: "main" },
-    root: { setup: manifest.setup, checks: manifest.checks },
-    stacks: { frontend: manifest.frontend, backend: manifest.backend },
-    e2e: manifest.e2e,
-  });
-  return toProjectManifest(config);
+  const [config] = defineProjects([
+    {
+      slug: "meme",
+      version: manifest.version,
+      repository: { owner: "sumrender", repo: "meme", defaultBranch: "main" },
+      root: { setup: manifest.setup, checks: manifest.checks },
+      stacks: { frontend: manifest.frontend, backend: manifest.backend },
+      e2e: manifest.e2e,
+    },
+  ]);
+  return toProjectManifest(config!);
 }
 
 const SCOPES: ChangeScope[] = [
@@ -44,7 +47,7 @@ function underSpecDir(path: string, manifest: ProjectManifest): boolean | null {
   return specDir !== "" && path.toLowerCase().startsWith(`${specDir}/`);
 }
 
-describe("config migration parity (.sdlc/manifest.json vs defineProject)", () => {
+describe("config migration parity (.sdlc/manifest.json vs defineProjects)", () => {
   it("produces an identical manifest", () => {
     assert.deepEqual(fromBuilder(loadJsonManifest()), loadJsonManifest());
   });
@@ -77,43 +80,57 @@ describe("config migration parity (.sdlc/manifest.json vs defineProject)", () =>
     });
     const viaBuilder = fromBuilder(withE2e);
     assert.equal(e2eSpecDir(viaBuilder.e2e!), e2eSpecDir(withE2e.e2e!));
-    // isSpecLike() depends on the manifest only via e2eSpecDir(); the spec
-    // suffix list is manifest-independent. Prefix membership parity therefore
-    // implies isSpecLike parity for every path.
     for (const path of ["apps/web/e2e/login.spec.ts", "apps/web/src/app.spec.ts", "apps/web/e2e/helpers/auth.ts"]) {
       assert.equal(underSpecDir(path, viaBuilder), underSpecDir(path, withE2e), path);
     }
   });
 });
 
-describe("defineProject defaults", () => {
-  it("preserves every manifest .default()", () => {
-    const config = defineProject({ repository: { owner: "o", repo: "r" } });
-    assert.deepEqual(config.root.setup, []);
-    assert.deepEqual(config.root.checks, []);
-    assert.equal(config.e2e, null);
-    assert.equal(config.stacks.frontend, undefined);
-    assert.equal(config.stacks.backend, undefined);
-    assert.deepEqual(config.deploy, []);
-    assert.equal(config.repository.defaultBranch, "main");
+describe("defineProjects defaults & validation", () => {
+  it("preserves every manifest .default() and per-project defaults", () => {
+    const [config] = defineProjects([{ slug: "proj-a", repository: { owner: "o", repo: "r" } }]);
+    assert.equal(config!.slug, "proj-a");
+    assert.deepEqual(config!.root.setup, []);
+    assert.deepEqual(config!.root.checks, []);
+    assert.equal(config!.e2e, null);
+    assert.equal(config!.stacks.frontend, undefined);
+    assert.equal(config!.stacks.backend, undefined);
+    assert.deepEqual(config!.deploy, []);
+    assert.equal(config!.repository.defaultBranch, "main");
+    assert.equal(config!.github.tokenEnv, "GITHUB_TOKEN");
 
-    const withStacks = defineProject({
-      repository: { owner: "o", repo: "r" },
-      stacks: {
-        frontend: { dir: "apps/web" },
-        backend: { dir: "apps/api", unitTests: { command: "pnpm test" } },
+    const [withStacks] = defineProjects([
+      {
+        slug: "proj-b",
+        repository: { owner: "o", repo: "r" },
+        stacks: {
+          frontend: { dir: "apps/web" },
+          backend: { dir: "apps/api", unitTests: { command: "pnpm test" } },
+        },
+        e2e: { command: "pnpm exec playwright test" },
       },
-      e2e: { command: "pnpm exec playwright test" },
-    });
-    assert.deepEqual(withStacks.stacks.frontend!.paths, []);
-    assert.deepEqual(withStacks.stacks.frontend!.setup, []);
-    assert.deepEqual(withStacks.stacks.frontend!.checks, []);
-    assert.equal(withStacks.stacks.frontend!.unitTests, null);
-    assert.deepEqual(withStacks.stacks.frontend!.integrations, []);
-    assert.equal(withStacks.stacks.backend!.unitTests!.cwd, ".");
-    assert.equal(withStacks.e2e!.testDir, "e2e");
-    assert.equal(withStacks.e2e!.cwd, ".");
-    assert.equal(withStacks.sandbox, undefined);
+    ]);
+    assert.deepEqual(withStacks!.stacks.frontend!.paths, []);
+    assert.deepEqual(withStacks!.stacks.frontend!.setup, []);
+    assert.deepEqual(withStacks!.stacks.frontend!.checks, []);
+    assert.equal(withStacks!.stacks.frontend!.unitTests, null);
+    assert.deepEqual(withStacks!.stacks.frontend!.integrations, []);
+    assert.equal(withStacks!.stacks.backend!.unitTests!.cwd, ".");
+    assert.equal(withStacks!.e2e!.testDir, "e2e");
+    assert.equal(withStacks!.e2e!.cwd, ".");
+    assert.equal(withStacks!.sandbox, undefined);
+  });
+
+  it("rejects empty arrays and duplicate slugs", () => {
+    assert.throws(() => defineProjects([]), /At least one project/i);
+    assert.throws(
+      () =>
+        defineProjects([
+          { slug: "dup", repository: { owner: "o", repo: "r1" } },
+          { slug: "dup", repository: { owner: "o", repo: "r2" } },
+        ]),
+      /Duplicate project slug/i,
+    );
   });
 });
 
@@ -143,25 +160,37 @@ describe("hashManifest (shared, UI-safe)", () => {
 });
 
 describe("buildProjectRow", () => {
-  it("maps repository + deploy, resolving null urls from env by target", () => {
-    const config = defineProject({
-      repository: { owner: "o", repo: "r", defaultBranch: "dev" },
-      deploy: [
-        { target: "FE", provider: "CLOUDFLARE", pathPrefix: "fe/", url: null },
-        { target: "BE", provider: "RENDER", pathPrefix: "be/", url: "https://be.fixed.example" },
-      ],
-    });
-    assert.deepEqual(buildProjectRow(config, { FE_ORIGIN: "https://fe.env.example" }), {
-      name: "r",
+  it("maps slug, repository + deploy, resolving null urls from deployProviders origins", () => {
+    const [config] = defineProjects([
+      {
+        slug: "demo-app",
+        name: "Demo App",
+        repository: { owner: "o", repo: "r", defaultBranch: "dev" },
+        deploy: [
+          { target: "FE", provider: "CLOUDFLARE", pathPrefix: "fe/", url: null },
+          { target: "BE", provider: "RENDER", pathPrefix: "be/", url: "https://be.fixed.example" },
+        ],
+        deployProviders: {
+          cloudflare: { workerName: "demo-fe", origin: "https://fe.cfg.example" },
+          render: { serviceId: "srv-123", origin: "https://be.cfg.example" },
+        },
+        maxConcurrentTasks: 5,
+        sandbox: { reuse: false },
+      },
+    ]);
+    assert.deepEqual(buildProjectRow(config!), {
+      slug: "demo-app",
+      name: "Demo App",
       owner: "o",
       repo: "r",
       defaultBranch: "dev",
       deployTargets: [
-        { target: "FE", provider: "CLOUDFLARE", pathPrefix: "fe/", url: "https://fe.env.example" },
+        { target: "FE", provider: "CLOUDFLARE", pathPrefix: "fe/", url: "https://fe.cfg.example" },
         { target: "BE", provider: "RENDER", pathPrefix: "be/", url: "https://be.fixed.example" },
       ],
+      maxConcurrentTasks: 5,
+      reuseSandbox: false,
     });
-    assert.deepEqual(buildProjectRow(config).deployTargets[0]?.url, null);
   });
 });
 

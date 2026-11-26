@@ -3,6 +3,7 @@ import { FindingSchema, HumanReviewDecisionSchema, MaxConcurrentTasksSchema, Pro
 import { ProjectManifestSchema } from "./manifest";
 
 export const CreateTaskInputSchema = z.object({
+  projectId: z.string().min(1),
   title: z.string().trim().min(1).max(200).optional(),
   description: z.string().trim().max(10_000).default(""),
   issueRef: z.string().trim().min(1).max(300).optional(),
@@ -131,11 +132,13 @@ export const API_PATHS = {
   sendReviewBack: (taskId: string, reviewId: string) => `/tasks/${taskId}/reviews/${reviewId}/send-back`,
   artifacts: (taskId: string) => `/tasks/${taskId}/artifacts`,
   artifactContent: (taskId: string, artifactId: string) => `/tasks/${taskId}/artifacts/${artifactId}/content`,
-  project: "/project",
-  updateProjectSettings: "/project/settings",
-  manifest: "/project/manifest",
-  runDemo: "/demo/run",
-  resetDemo: "/demo/reset",
+  projects: "/projects",
+  project: (projectId: string) => `/projects/${encodeURIComponent(projectId)}`,
+  updateProjectSettings: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/settings`,
+  projectManifest: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/manifest`,
+  reloadProjectsConfig: "/projects/reload",
+  runDemo: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/demo/run`,
+  resetDemo: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/demo/reset`,
   events: "/events",
 } as const;
 
@@ -173,7 +176,19 @@ export const SandboxImageStatusSchema = z.object({
 });
 export type SandboxImageStatus = z.infer<typeof SandboxImageStatusSchema>;
 
-/** Response of GET /project: everything the Settings page shows. Nothing here is hardcoded in the UI. */
+export const ReloadProjectsResultSchema = z.discriminatedUnion("ok", [
+  z.object({
+    ok: z.literal(true),
+    source: z.string(),
+    loadedAt: z.string(),
+    projects: z.array(z.object({ slug: z.string(), hash: z.string(), epoch: z.number().int() })),
+    changedSlugs: z.array(z.string()),
+  }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+export type ReloadProjectsResult = z.infer<typeof ReloadProjectsResultSchema>;
+
+/** Response of GET /projects/:projectId: everything the Settings page shows. Nothing here is hardcoded in the UI. */
 export const ProjectSettingsSchema = z.object({
   project: ProjectSchema,
   github: GitHubConnectionSchema,
@@ -188,6 +203,8 @@ export const ProjectSettingsSchema = z.object({
   activeTaskCount: z.number().int().default(0),
   maxConcurrentTasks: MaxConcurrentTasksSchema.default(3),
   reuseSandbox: z.boolean().default(true),
+  globalActiveTaskCount: z.number().int().default(0),
+  maxGlobalConcurrentTasks: z.number().int().default(4),
   /** Deploy targets whose pathPrefix overlaps no stack paths (warn-only). */
   deployWarnings: z.array(z.string()).default([]),
 });

@@ -2,7 +2,7 @@ import { ReviewOutputSchema, type ReviewOutput, type Reviewer } from "@sdlc-ai/s
 import { db } from "../db/index.js";
 import { reviews, type TaskRow, type TestRunRow } from "../db/schema.js";
 import { bus } from "../events/bus.js";
-import { loadManifestForTask } from "../integrations/manifest.js";
+import { getProjectConfigHash, loadManifestForTask } from "../integrations/config-loader.js";
 import { TIMEOUTS } from "../pipeline/deps.js";
 import { latestTestRun } from "../pipeline/tasks.js";
 import { WORKSPACE } from "../sandbox/docker.js";
@@ -24,16 +24,17 @@ const FOCUS: Record<Reviewer, string> = {
 export const reviewerBody =
   (reviewer: Reviewer): AgentBody =>
   async (ctx) => {
-    const { deps, sandbox, log, task, project } = ctx;
+    const { github, sandbox, log, task, project } = ctx;
     if (!task.branchName) throw new Error("Task has no branch name");
 
     // Task-pinned snapshot so parallel reviewers share one manifest.
-    const manifest = await loadManifestForTask(deps.github, project.defaultBranch, task);
+    const manifest = await loadManifestForTask(project.slug, task);
+    const configHash = task.configHash ?? getProjectConfigHash(project.slug);
     const reuse = Boolean((project as { reuseSandbox?: boolean }).reuseSandbox);
     if (reuse) {
-      await prepareWorkspaceReuse(sandbox, deps.github, { ref: task.branchName, manifest, agents: [reviewer], log });
+      await prepareWorkspaceReuse(sandbox, github, { ref: task.branchName, manifest, agents: [reviewer], log, configHash });
     } else {
-      await prepareWorkspace(sandbox, deps.github, { ref: task.branchName, manifest, agents: [reviewer], log });
+      await prepareWorkspace(sandbox, github, { ref: task.branchName, manifest, agents: [reviewer], log, configHash });
     }
     // Isolated OpenCode data dir so parallel reviewer sessions in one
     // container don't contend on the same SQLite store. Fresh session always.

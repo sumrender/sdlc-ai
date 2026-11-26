@@ -3,9 +3,8 @@ import { e2eSpecDir, type E2eConfig } from "@sdlc-ai/shared";
 import { db } from "../db/index.js";
 import { tasks, type TaskRow } from "../db/schema.js";
 import { bus } from "../events/bus.js";
-import { loadManifest } from "../integrations/manifest.js";
+import { loadManifestForTask } from "../integrations/config-loader.js";
 import type { Deps } from "./deps.js";
-import { getProject } from "./tasks.js";
 
 export interface CoverageResult {
   covered: boolean;
@@ -63,12 +62,12 @@ export async function ensureCoverage(deps: Deps, task: TaskRow, llmCheck: LlmCov
       rationale: "Coverage already decided for this E2E visit.",
     };
   }
-  const project = await getProject();
-  const manifest = await loadManifest(deps.github, project.defaultBranch);
+  const { project, github } = await deps.forProject(task.projectId);
+  const manifest = await loadManifestForTask(project.slug, task);
   if (!manifest.e2e) {
     return { covered: true, rationale: "No e2e suite configured in the manifest; coverage not required." };
   }
-  const changedFiles = task.pullRequestNumber ? await deps.github.getChangedFiles(task.pullRequestNumber) : [];
+  const changedFiles = task.pullRequestNumber ? await github.getChangedFiles(task.pullRequestNumber) : [];
   const { covered, specFiles } = heuristicCovered(changedFiles, manifest.e2e);
 
   let result: CoverageResult;

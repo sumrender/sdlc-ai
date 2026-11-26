@@ -38,6 +38,7 @@ const ts = (name: string) => timestamp(name, { withTimezone: true });
 
 export const projects = pgTable("projects", {
   id: uuid("id").primaryKey().defaultRandom(),
+  slug: text("slug").notNull().unique(),
   name: text("name").notNull(),
   owner: text("owner").notNull(),
   repo: text("repo").notNull(),
@@ -45,12 +46,13 @@ export const projects = pgTable("projects", {
   deployTargets: jsonb("deploy_targets").$type<DeployTargetConfig[]>().notNull().default([]),
   maxConcurrentTasks: integer("max_concurrent_tasks").notNull().default(3),
   reuseSandbox: boolean("reuse_sandbox").notNull().default(true),
+  active: boolean("active").notNull().default(true),
   createdAt: ts("created_at").notNull().defaultNow(),
 });
 
-// One owner per PR / branch: partial unique indexes (NULLs never conflict).
-// Duplicate ownership previously slipped in via PR adoption, making two tasks
-// commit to the same branch and delete it under each other on merge.
+// One owner per PR / branch within a Project: composite partial unique indexes
+// (NULLs never conflict). Scoping by projectId lets two Projects track PR #12
+// or identical branch names independently without colliding.
 export const tasks = pgTable("tasks", {
   id: uuid("id").primaryKey().defaultRandom(),
   projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
@@ -79,11 +81,11 @@ export const tasks = pgTable("tasks", {
   updatedAt: ts("updated_at").notNull().defaultNow(),
   },
   (t) => [
-    uniqueIndex("tasks_pull_request_number_key")
-      .on(t.pullRequestNumber)
+    uniqueIndex("tasks_project_pull_request_number_key")
+      .on(t.projectId, t.pullRequestNumber)
       .where(sql`${t.pullRequestNumber} is not null`),
-    uniqueIndex("tasks_branch_name_key")
-      .on(t.branchName)
+    uniqueIndex("tasks_project_branch_name_key")
+      .on(t.projectId, t.branchName)
       .where(sql`${t.branchName} is not null`),
   ],
 );

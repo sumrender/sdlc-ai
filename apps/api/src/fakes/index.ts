@@ -1,42 +1,45 @@
 import { randomBytes } from "node:crypto";
-import { MANIFEST_PATH, defineProject, toProjectManifest } from "@sdlc-ai/shared";
+import { MANIFEST_PATH, defineProjects, toProjectManifest } from "@sdlc-ai/shared";
 import type { DeployLookup, DeployProvider, ExecOptions, ExecResult, GitHubService, Sandbox, SandboxRunner } from "../ports.js";
 
 // Scripted in-memory fakes so the whole pipeline can be driven over HTTP without Docker, GitHub or OpenCode Zen.
 
 // Single source for the fake manifest: a converted project config, so the
-// fakes can never drift from the config schema (P3 row-builder migration).
-const FAKE_CONFIG = defineProject({
-  version: 2,
-  repository: { owner: "fake", repo: "meme", defaultBranch: "main" },
-  root: { setup: ["npm ci"], checks: [] },
-  stacks: {
-    frontend: {
-      dir: "fe",
-      paths: ["fe/**"],
-      setup: ["npm ci --prefix fe"],
-      checks: ["npm run build --prefix fe"],
-      unitTests: { command: "npx ng test --watch=false --browsers=ChromeHeadless", cwd: "fe", optional: true },
-      integrations: [{ name: "Playwright E2E", notes: "npm run test:e2e in fe; E2E_START_SERVER boots ng serve" }],
+// fakes can never drift from the config schema.
+const [FAKE_CONFIG] = defineProjects([
+  {
+    slug: "meme",
+    version: 2,
+    repository: { owner: "fake", repo: "meme", defaultBranch: "main" },
+    root: { setup: ["npm ci"], checks: [] },
+    stacks: {
+      frontend: {
+        dir: "fe",
+        paths: ["fe/**"],
+        setup: ["npm ci --prefix fe"],
+        checks: ["npm run build --prefix fe"],
+        unitTests: { command: "npx ng test --watch=false --browsers=ChromeHeadless", cwd: "fe", optional: true },
+        integrations: [{ name: "Playwright E2E", notes: "npm run test:e2e in fe; E2E_START_SERVER boots ng serve" }],
+      },
+      backend: {
+        dir: "be",
+        paths: ["be/**"],
+        setup: [],
+        checks: [],
+        unitTests: null,
+        integrations: [],
+      },
     },
-    backend: {
-      dir: "be",
-      paths: ["be/**"],
-      setup: [],
-      checks: [],
-      unitTests: null,
-      integrations: [],
+    e2e: {
+      command: "npm run test:e2e",
+      cwd: "fe",
+      env: { E2E_START_SERVER: "true" },
+      artifacts: ["fe/playwright-report", "fe/test-results"],
     },
   },
-  e2e: {
-    command: "npm run test:e2e",
-    cwd: "fe",
-    env: { E2E_START_SERVER: "true" },
-    artifacts: ["fe/playwright-report", "fe/test-results"],
-  },
-});
+]);
 
-const FAKE_MANIFEST = JSON.stringify(toProjectManifest(FAKE_CONFIG), null, 2);
+const FAKE_MANIFEST = JSON.stringify(toProjectManifest(FAKE_CONFIG!), null, 2);
 
 const FAKE_DIFF = `diff --git a/fe/src/components/GalleryHeader.tsx b/fe/src/components/GalleryHeader.tsx
 --- a/fe/src/components/GalleryHeader.tsx
@@ -59,8 +62,13 @@ export class FakeGitHubService implements GitHubService {
   private pulls = 100;
   readonly log: string[] = [];
 
+  constructor(
+    readonly owner = "fake",
+    readonly repo = "meme",
+  ) {}
+
   cloneUrl() {
-    return "https://github.com/fake/meme.git";
+    return `https://github.com/${this.owner}/${this.repo}.git`;
   }
   gitAuthHeader() {
     return "AUTHORIZATION: basic ZmFrZTpmYWtl";
@@ -68,23 +76,23 @@ export class FakeGitHubService implements GitHubService {
   async createIssue(title: string) {
     const number = ++this.issues;
     this.log.push(`issue #${number}: ${title}`);
-    return { number, url: `https://github.com/fake/meme/issues/${number}` };
+    return { number, url: `https://github.com/${this.owner}/${this.repo}/issues/${number}` };
   }
   async getIssue(number: number) {
-    return { number, title: `Fake issue #${number}`, body: `Fake issue body #${number}`, url: `https://github.com/fake/meme/issues/${number}`, state: "open" };
+    return { number, title: `Fake issue #${number}`, body: `Fake issue body #${number}`, url: `https://github.com/${this.owner}/${this.repo}/issues/${number}`, state: "open" };
   }
   async createPullRequest(input: { title: string; head: string }) {
     const number = ++this.pulls;
     this.branches.add(input.head);
     this.log.push(`pr #${number}: ${input.title}`);
-    return { number, url: `https://github.com/fake/meme/pull/${number}` };
+    return { number, url: `https://github.com/${this.owner}/${this.repo}/pull/${number}` };
   }
   async getPullRequest(number: number) {
     return {
       number,
       title: `Fake PR #${number}`,
       body: `Fake PR body for #${number}`,
-      url: `https://github.com/fake/meme/pull/${number}`,
+      url: `https://github.com/${this.owner}/${this.repo}/pull/${number}`,
       state: "open",
       head: `sdlc/fake-pr-${number}`,
       base: "main",
@@ -126,7 +134,7 @@ export class FakeGitHubService implements GitHubService {
     const id = ++this.commentSeq;
     this.comments.push({ id, body });
     this.log.push(`comment on pr #${pullNumber}: ${body.slice(0, 80)}`);
-    return { id, url: `https://github.com/fake/meme/pull/${pullNumber}#issuecomment-${id}` };
+    return { id, url: `https://github.com/${this.owner}/${this.repo}/pull/${pullNumber}#issuecomment-${id}` };
   }
   async listComments() {
     return [...this.comments];
@@ -149,19 +157,31 @@ export class FakeGitHubService implements GitHubService {
 }
 
 export class FakeSandboxRunner implements SandboxRunner {
-  constructor(private readonly github: FakeGitHubService) {}
+  private readonly githubByCloneUrl = new Map<string, FakeGitHubService>();
+
+  constructor(private readonly defaultGithub?: FakeGitHubService) {}
+
+  registerGitHub(cloneUrl: string, github: FakeGitHubService): void {
+    this.githubByCloneUrl.set(cloneUrl, github);
+  }
+
   async create({ name }: { name: string }): Promise<Sandbox> {
-    return new FakeSandbox(name, this.github);
+    return new FakeSandbox(name, this.githubByCloneUrl, this.defaultGithub);
   }
 }
 
 class FakeSandbox implements Sandbox {
   private cloned = false;
   private setupHash = "";
+  private activeGithub: FakeGitHubService | undefined;
+
   constructor(
     readonly name: string,
-    private readonly github: FakeGitHubService,
-  ) {}
+    private readonly githubByCloneUrl: Map<string, FakeGitHubService>,
+    defaultGithub?: FakeGitHubService,
+  ) {
+    this.activeGithub = defaultGithub;
+  }
 
   async exec(command: string, options: ExecOptions = {}): Promise<ExecResult> {
     await delay(150);
@@ -173,7 +193,7 @@ class FakeSandbox implements Sandbox {
     if (command.includes("opencode run")) return ok(this.opencode(command, options.stdin ?? ""));
     if (command.includes("SDLC_PUSHED")) {
       const branch = command.match(/refs\/heads\/'([^']+)'/)?.[1];
-      if (branch) this.github.branches.add(branch);
+      if (branch) this.activeGithub?.branches.add(branch);
       return ok(`[${branch ?? "HEAD"}] ${fakeSha().slice(0, 7)} committed\nSDLC_PUSHED ${fakeSha()}`);
     }
     if (command.startsWith("git diff")) return ok(FAKE_DIFF);
@@ -186,8 +206,12 @@ class FakeSandbox implements Sandbox {
     }
     if (command.includes("test -d") && command.includes(".git")) return ok(this.cloned ? "SDLC_HAS_GIT" : "SDLC_NO_GIT");
     if (command.startsWith("cat /tmp/.sdlc-setup-hash")) return ok(this.setupHash);
-    if (command.startsWith("git clone")) {
+    if (command.includes("git clone")) {
       this.cloned = true;
+      const cloneMatch = command.match(/https:\/\/github\.com\/[^\s'"]+\.git/);
+      if (cloneMatch) {
+        this.activeGithub = this.githubByCloneUrl.get(cloneMatch[0]) ?? this.activeGithub;
+      }
       return ok("Cloning into '/workspace'...");
     }
     return ok();

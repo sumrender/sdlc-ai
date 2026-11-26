@@ -6,7 +6,7 @@ import { db } from "../db/index.js";
 import { testRuns, type TestRunRow } from "../db/schema.js";
 import { AgentOutputError, SandboxError, TimeoutError, errorMessage } from "../errors.js";
 import { bus } from "../events/bus.js";
-import { loadManifest } from "../integrations/manifest.js";
+import { getProjectConfigHash, loadManifestForTask } from "../integrations/config-loader.js";
 import type { E2eConfig } from "@sdlc-ai/shared";
 import type { Sandbox } from "../ports.js";
 import { WORKSPACE } from "../sandbox/docker.js";
@@ -15,7 +15,7 @@ import { prepareWorkspace, prepareWorkspaceReuse } from "../sandbox/workspace.js
 import { TaskSandboxPool } from "../sandbox/task-pool.js";
 import { TIMEOUTS, type Deps } from "./deps.js";
 import { postE2EReport } from "./e2e-report.js";
-import { failTask, getProject, getTask, nextTestAttempt, tail } from "./tasks.js";
+import { failTask, getTask, nextTestAttempt, tail } from "./tasks.js";
 
 export async function startTestRun(deps: Deps, taskId: string, attempt?: number): Promise<TestRunRow> {
   const resolved = attempt ?? (await nextTestAttempt(taskId));
@@ -48,8 +48,9 @@ async function execute(deps: Deps, run: TestRunRow): Promise<void> {
     const task = await getTask(run.taskId);
     if (!task) throw new Error("Task no longer exists");
     if (!task.branchName) throw new AgentOutputError("Task has no branch name");
-    const project = await getProject();
-    const manifest = await loadManifest(deps.github, project.defaultBranch);
+    const { project, github, sandboxImage } = await deps.forProject(task.projectId);
+    const manifest = await loadManifestForTask(project.slug, task);
+    const configHash = task.configHash ?? getProjectConfigHash(project.slug);
     if (!manifest.e2e) {
       // Project has no e2e suite (optional): record a passing no-op run.
       exitCode = 0;
@@ -65,16 +66,16 @@ async function execute(deps: Deps, run: TestRunRow): Promise<void> {
       const pool = deps.sandboxes instanceof TaskSandboxPool ? deps.sandboxes : null;
       const reuse = Boolean(pool && (project as { reuseSandbox?: boolean }).reuseSandbox);
       if (reuse && pool) {
-        sandbox = await pool.acquire(task.id);
+        sandbox = await pool.acquire(task.id, sandboxImage);
         log(`Reusing container ${sandbox.name} for Test Run`);
-        await prepareWorkspaceReuse(sandbox, deps.github, { ref: task.branchName, manifest, agents: [], log });
+        await prepareWorkspaceReuse(sandbox, github, { ref: task.branchName, manifest, agents: [], log, configHash });
       } else {
-        sandbox = await deps.sandboxes.create({ name: `sdlc-e2e-${run.id.slice(0, 8)}-a${run.attempt}` });
+        sandbox = await deps.sandboxes.create({ name: `sdlc-e2e-${run.id.slice(0, 8)}-a${run.attempt}`, image: sandboxImage });
         // Register so Stop/Delete can destroy this container mid-run.
         const poolForOwned = deps.sandboxes instanceof TaskSandboxPool ? deps.sandboxes : null;
         const releaseOwned = poolForOwned?.registerOwned(task.id, sandbox) ?? null;
         try {
-          await prepareWorkspace(sandbox, deps.github, { ref: task.branchName, manifest, agents: [], log });
+          await prepareWorkspace(sandbox, github, { ref: task.branchName, manifest, agents: [], log, configHash });
         } finally {
           releaseOwned?.();
         }

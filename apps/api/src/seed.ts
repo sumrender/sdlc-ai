@@ -8,9 +8,9 @@ import { eq } from "drizzle-orm";
 import { REVIEWERS, type Agent, type EventType, type Finding, type RunStatus, type Stage, type TaskStatus, type Verdict } from "@sdlc-ai/shared";
 import { ArtifactStore } from "./artifacts/store.js";
 import { closeDb, db, runMigrations } from "./db/index.js";
-import { agentRuns, approvals, deployments, events, projects, questions, reviews, tasks, testRuns, type TaskRow } from "./db/schema.js";
+import { agentRuns, approvals, deployments, events, projects, questions, reviews, tasks, testRuns, type ProjectRow, type TaskRow } from "./db/schema.js";
 import { env } from "./env.js";
-import { loadProjectRow } from "./integrations/project-row.js";
+import { ProjectRegistry } from "./integrations/project-registry.js";
 
 const store = new ArtifactStore(env.ARTIFACTS_DIR);
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000);
@@ -31,7 +31,11 @@ const FINDINGS: Record<(typeof REVIEWERS)[number], { verdict: Verdict; findings:
 
 async function main() {
   await runMigrations();
-  const projectId = await upsertProject();
+  const synced = await syncSeedProjects();
+  const primary = synced[0]!;
+  const projectId = primary.id;
+  const feOrigin = primary.deployTargets.find((t) => t.target === "FE")?.url ?? `https://${primary.slug}-fe.stage.example`;
+  const beOrigin = primary.deployTargets.find((t) => t.target === "BE")?.url ?? `https://${primary.slug}-be.stage.example`;
   await db.delete(tasks);
   await store.clear();
 
@@ -39,6 +43,7 @@ async function main() {
   let pr = 120;
 
   const create = async (input: {
+    targetProject?: ProjectRow;
     title: string;
     description: string;
     stage: Stage;
@@ -53,6 +58,7 @@ async function main() {
     pendingFeedback?: string;
     error?: string;
   }): Promise<TaskRow> => {
+    const target = input.targetProject ?? primary;
     const id = randomUUID();
     const slug = input.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
     const n = ++issue;
@@ -61,17 +67,17 @@ async function main() {
       .insert(tasks)
       .values({
         id,
-        projectId,
+        projectId: target.id,
         title: input.title,
         description: input.description,
         stage: input.stage,
         status: input.status,
         plan: input.plan ?? null,
         issueNumber: n,
-        issueUrl: `https://github.com/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/issues/${n}`,
+        issueUrl: `https://github.com/${target.owner}/${target.repo}/issues/${n}`,
         branchName: `sdlc/${id.slice(0, 8)}-${slug}`,
         pullRequestNumber: p,
-        pullRequestUrl: p ? `https://github.com/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/pull/${p}` : null,
+        pullRequestUrl: p ? `https://github.com/${target.owner}/${target.repo}/pull/${p}` : null,
         mergedCommitSha: input.merged ? sha() : null,
         e2eRejectLoopUsed: input.e2eRejectLoopUsed ?? false,
         pendingFeedback: input.pendingFeedback ?? null,
@@ -272,8 +278,8 @@ async function main() {
     await event(t, "APPROVAL_DECIDED", { approvalId: a!.id, decision: "APPROVED", feedback: null }, 6);
     await event(t, "MERGED", { sha: t.mergedCommitSha, pullRequestNumber: t.pullRequestNumber, changedFiles: ["fe/src/components/GalleryHeader.tsx", "be/Controllers/TemplatesController.cs"] }, 5);
     await stageChange(t, "HUMAN_REVIEW", "STAGING", 5);
-    const [fe] = await db.insert(deployments).values({ taskId: t.id, target: "FE", provider: "CLOUDFLARE", commitSha: t.mergedCommitSha!, status: "LIVE", url: env.FE_ORIGIN ?? "https://meme-fe.stage.example", providerRef: "cf-build-9f31", lastPolledAt: minutesAgo(1), createdAt: minutesAgo(5) }).returning();
-    const [be] = await db.insert(deployments).values({ taskId: t.id, target: "BE", provider: "RENDER", commitSha: t.mergedCommitSha!, status: "BUILDING", url: env.BE_ORIGIN ?? "https://meme-be.stage.example", providerRef: "dep-c8a2", lastPolledAt: minutesAgo(0), createdAt: minutesAgo(5) }).returning();
+    const [fe] = await db.insert(deployments).values({ taskId: t.id, target: "FE", provider: "CLOUDFLARE", commitSha: t.mergedCommitSha!, status: "LIVE", url: feOrigin, providerRef: "cf-build-9f31", lastPolledAt: minutesAgo(1), createdAt: minutesAgo(5) }).returning();
+    const [be] = await db.insert(deployments).values({ taskId: t.id, target: "BE", provider: "RENDER", commitSha: t.mergedCommitSha!, status: "BUILDING", url: beOrigin, providerRef: "dep-c8a2", lastPolledAt: minutesAgo(0), createdAt: minutesAgo(5) }).returning();
     await event(t, "DEPLOYMENT_UPDATED", { deploymentId: fe!.id, target: "FE", provider: "CLOUDFLARE", from: "PENDING", to: "LIVE", url: fe!.url }, 2);
     await event(t, "DEPLOYMENT_UPDATED", { deploymentId: be!.id, target: "BE", provider: "RENDER", from: "PENDING", to: "BUILDING", url: be!.url }, 3);
   }
@@ -296,13 +302,40 @@ async function main() {
     await event(t, "APPROVAL_DECIDED", { approvalId: a!.id, decision: "APPROVED", feedback: null }, 130);
     await event(t, "MERGED", { sha: t.mergedCommitSha, pullRequestNumber: t.pullRequestNumber, changedFiles: ["fe/src/components/TemplateCard.tsx"] }, 129);
     await stageChange(t, "HUMAN_REVIEW", "STAGING", 129);
-    const [fe] = await db.insert(deployments).values({ taskId: t.id, target: "FE", provider: "CLOUDFLARE", commitSha: t.mergedCommitSha!, status: "LIVE", url: env.FE_ORIGIN ?? "https://meme-fe.stage.example", providerRef: "cf-build-8e02", lastPolledAt: minutesAgo(125), createdAt: minutesAgo(129) }).returning();
+    const [fe] = await db.insert(deployments).values({ taskId: t.id, target: "FE", provider: "CLOUDFLARE", commitSha: t.mergedCommitSha!, status: "LIVE", url: feOrigin, providerRef: "cf-build-8e02", lastPolledAt: minutesAgo(125), createdAt: minutesAgo(129) }).returning();
     await event(t, "DEPLOYMENT_UPDATED", { deploymentId: fe!.id, target: "FE", provider: "CLOUDFLARE", from: "BUILDING", to: "LIVE", url: fe!.url }, 125);
     await event(t, "TASK_STATUS_CHANGED", { status: "COMPLETED", from: "RUNNING", to: "COMPLETED", stage: "STAGING" }, 125);
   }
 
+  // Secondary project demo tasks (when multiple projects are configured)
+  if (synced[1]) {
+    const secondary = synced[1];
+    await create({
+      targetProject: secondary,
+      title: "Show project selector badge in task header",
+      description: "Display the owning project slug on the task detail breadcrumb.",
+      stage: "TODO",
+      status: "READY",
+      ageMinutes: 10,
+      stageEnteredMinutesAgo: 10,
+    });
+    const t2 = await create({
+      targetProject: secondary,
+      title: "Filter SSE stream by projectId",
+      description: "Prevent events from other repositories from updating the active board.",
+      stage: "DEVELOPMENT",
+      status: "RUNNING",
+      ageMinutes: 15,
+      stageEnteredMinutesAgo: 12,
+      plan: "1. Pass projectId in EventBus broadcasts.\n2. Filter /events?projectId= on the server.",
+    });
+    await stageChange(t2, "TODO", "PLANNING", 14);
+    await stageChange(t2, "PLANNING", "DEVELOPMENT", 12);
+    void projectId;
+  }
+
   const count = await db.select({ id: tasks.id }).from(tasks);
-  console.log(`[seed] ${count.length} tasks seeded for ${env.GITHUB_OWNER}/${env.GITHUB_REPO}; artifacts under ${store.root}`);
+  console.log(`[seed] ${count.length} tasks seeded across ${synced.length} project(s); artifacts under ${store.root}`);
 }
 
 function playwrightReportHtml(pass: boolean): string {
@@ -369,19 +402,13 @@ function crc32(buf: Buffer): number {
   return (crc ^ -1) >>> 0;
 }
 
-async function upsertProject(): Promise<string> {
-  const [existing] = await db.select().from(projects).limit(1);
-  const projectRow = await loadProjectRow(env);
-  const values = {
-    ...projectRow,
-    maxConcurrentTasks: existing?.maxConcurrentTasks ?? 3,
-  };
-  if (existing) {
-    await db.update(projects).set(values).where(eq(projects.id, existing.id));
-    return existing.id;
-  }
-  const [row] = await db.insert(projects).values(values).returning();
-  return row!.id;
+async function syncSeedProjects(): Promise<ProjectRow[]> {
+  const registry = new ProjectRegistry({ fakes: env.SDLC_FAKES, env });
+  const read = await registry.syncProjects();
+  if (!read.ok) throw new Error(`Cannot seed without a valid sdlc.config.ts: ${read.error}`);
+  const rows = await db.select().from(projects).where(eq(projects.active, true));
+  if (rows.length === 0) throw new Error("No active projects synced from sdlc.config.ts");
+  return rows;
 }
 
 main()

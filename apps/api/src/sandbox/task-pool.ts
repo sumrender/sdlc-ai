@@ -49,13 +49,13 @@ export class TaskSandboxPool implements SandboxRunner {
     return this.shared.has(taskId);
   }
 
-  async acquire(taskId: string): Promise<Sandbox> {
+  async acquire(taskId: string, image?: string): Promise<Sandbox> {
     const existing = this.shared.get(taskId);
     if (existing) {
       existing.lastUsedAt = Date.now();
       return existing.sandbox;
     }
-    const sandbox = await this.inner.create({ name: this.sharedName(taskId) });
+    const sandbox = await this.inner.create({ name: this.sharedName(taskId), image });
     this.shared.set(taskId, { sandbox, lastUsedAt: Date.now() });
     return sandbox;
   }
@@ -86,6 +86,10 @@ export class TaskSandboxPool implements SandboxRunner {
       entry ? entry.sandbox.destroy().catch(() => undefined) : Promise.resolve(),
       ...owned.map((s) => s.destroy().catch(() => undefined)),
     ]);
+  }
+
+  async destroyTasks(taskIds: readonly string[]): Promise<void> {
+    await Promise.all(taskIds.map((id) => this.destroyTask(id)));
   }
 
   async clear(): Promise<void> {

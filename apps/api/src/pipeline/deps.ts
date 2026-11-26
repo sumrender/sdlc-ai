@@ -1,11 +1,10 @@
-import type { Provider } from "@sdlc-ai/shared";
 import type { ArtifactStore } from "../artifacts/store.js";
-import type { DeployProvider, GitHubService, SandboxRunner } from "../ports.js";
+import type { ProjectRuntime } from "../integrations/project-registry.js";
+import type { SandboxRunner } from "../ports.js";
 
 export interface Deps {
   sandboxes: SandboxRunner;
-  github: GitHubService;
-  deployProviders: Partial<Record<Provider, DeployProvider>>;
+  forProject: (projectId: string) => Promise<ProjectRuntime>;
   artifacts: ArtifactStore;
   advance: (taskId: string) => Promise<void>;
 }

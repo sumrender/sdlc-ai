@@ -21,12 +21,14 @@ export const isTerminalDeployment = (d: DeploymentRow) => d.status === "LIVE" ||
 export async function pollDeployments(deps: Deps, task: TaskRow): Promise<DeploymentRow[]> {
   const rows = await db.select().from(deployments).where(eq(deployments.taskId, task.id));
   const now = new Date();
+  const pending = rows.filter((d) => !isTerminalDeployment(d));
+  const { deployProviders } = pending.length > 0 ? await deps.forProject(task.projectId) : { deployProviders: {} as Partial<Record<DeploymentRow["provider"], import("../ports.js").DeployProvider>> };
 
   for (const d of rows) {
     if (isTerminalDeployment(d)) continue;
     if (d.lastPolledAt && now.getTime() - d.lastPolledAt.getTime() < MIN_POLL_INTERVAL_MS) continue;
 
-    const provider = deps.deployProviders[d.provider];
+    const provider = deployProviders[d.provider];
     if (!provider) {
       // Fail fast instead of polling to the 15-minute deployment timeout: a
       // configured target without provider credentials won't resolve on its

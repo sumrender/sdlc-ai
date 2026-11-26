@@ -1,9 +1,10 @@
 import { useState, type ReactNode } from "react";
 import { Plus } from "lucide-react";
+import type { ProjectSummary } from "@sdlc-ai/shared";
 import { Button } from "~/components/ui/button";
 import { NewTaskDialog } from "./NewTaskDialog";
 
-export function AppHeader({ nav }: { nav?: ReactNode }) {
+export function AppHeader({ nav, activeProject }: { nav?: ReactNode; activeProject?: ProjectSummary | null }) {
   const [newTaskOpen, setNewTaskOpen] = useState(false);
 
   return (
@@ -14,16 +15,21 @@ export function AppHeader({ nav }: { nav?: ReactNode }) {
             S
           </span>
           <span className="text-sm font-semibold tracking-tight">AI powered SDLC</span>
+          {activeProject && (
+            <span className="hidden rounded-md border border-border bg-secondary/60 px-2 py-0.5 font-mono text-[11px] text-muted-foreground sm:inline-flex">
+              {activeProject.owner}/{activeProject.repo}
+            </span>
+          )}
         </span>
         {nav}
         <div className="ml-auto flex items-center gap-2">
-          <Button size="sm" onClick={() => setNewTaskOpen(true)}>
+          <Button size="sm" onClick={() => setNewTaskOpen(true)} disabled={!activeProject}>
             <Plus /> New Task
           </Button>
         </div>
       </div>
 
-      <NewTaskDialog open={newTaskOpen} onOpenChange={setNewTaskOpen} />
+      <NewTaskDialog open={newTaskOpen} onOpenChange={setNewTaskOpen} defaultProjectId={activeProject?.id} />
     </header>
   );
 }

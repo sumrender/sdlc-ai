@@ -3,12 +3,13 @@ import { cors } from "hono/cors";
 import type { ZodType, ZodTypeDef } from "zod";
 import { API_PATHS } from "@sdlc-ai/shared";
 import { HttpError } from "../errors.js";
+import type { ProjectRegistry } from "../integrations/project-registry.js";
 import type { WorkflowService } from "../pipeline/workflow.js";
 import { eventRoutes } from "./events.js";
-import { projectRoutes } from "./project.js";
+import { projectsRoutes } from "./projects.js";
 import { taskRoutes } from "./tasks.js";
 
-export function createApp(workflow: WorkflowService) {
+export function createApp(workflow: WorkflowService, registry: ProjectRegistry) {
   const app = new Hono();
 
   app.use("*", cors());
@@ -17,7 +18,7 @@ export function createApp(workflow: WorkflowService) {
     if (err instanceof HttpError) return c.json(err.code ? { error: err.message, code: err.code } : { error: err.message }, err.status as 400);
     if (isGitHubError(err)) {
       console.error(`[api] ${c.req.method} ${c.req.path} — GitHub ${err.status}: ${err.message}`);
-      return c.json({ error: `GitHub rejected the request (${err.status}): ${err.message}. Check GITHUB_TOKEN and its access to the Project repository.`, code: "GITHUB_ERROR" }, 502);
+      return c.json({ error: `GitHub rejected the request (${err.status}): ${err.message}. Check the Project's GitHub token and repository access.`, code: "GITHUB_ERROR" }, 502);
     }
     console.error(`[api] ${c.req.method} ${c.req.path}`, err);
     return c.json({ error: "Internal Server Error" }, 500);
@@ -26,17 +27,8 @@ export function createApp(workflow: WorkflowService) {
 
   app.get(API_PATHS.health, (c) => c.json({ ok: true, at: new Date().toISOString() }));
   app.route(API_PATHS.tasks, taskRoutes(workflow, workflow.deps.artifacts));
-  app.route(API_PATHS.project, projectRoutes(workflow));
+  app.route(API_PATHS.projects, projectsRoutes(workflow, registry));
   app.route(API_PATHS.events, eventRoutes());
-  app.post(API_PATHS.runDemo, async (c) => {
-    const task = await workflow.runDemo();
-    return c.json(await workflow.boardTask(task.id), 201);
-  });
-  app.post(API_PATHS.resetDemo, async (c) => {
-    const body = await readJson(c.req.raw);
-    if ((body as { confirm?: unknown })?.confirm !== true) throw new HttpError(400, 'Reset requires { "confirm": true }');
-    return c.json(await workflow.resetDemo());
-  });
 
   return app;
 }

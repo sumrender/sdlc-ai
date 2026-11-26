@@ -2,11 +2,12 @@ import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Trash2 } from "lucide-react";
-import { closableIssue, closablePullRequest, type DeleteTaskInput, type TaskDetail } from "@sdlc-ai/shared";
+import { closableIssue, closablePullRequest, type DeleteTaskInput, type ProjectSummary, type TaskDetail } from "@sdlc-ai/shared";
 import { Button } from "~/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "~/components/ui/dialog";
 import { useApi } from "~/lib/api-context";
 import { tasksQueryKey } from "~/lib/board-query";
+import { projectsQueryKey } from "~/lib/settings-query";
 import { taskQueryKey } from "~/lib/task-query";
 import { cn } from "~/lib/utils";
 
@@ -34,11 +35,15 @@ export function DeleteTaskDialog({ task, open, onOpenChange }: DeleteTaskDialogP
   const submit = useMutation({
     mutationFn: (input: DeleteTaskInput) => client.deleteTask(task.id, input),
     onSuccess: () => {
-      // The Task is gone server-side: drop its caches and return to the board.
+      // The Task is gone server-side: drop its caches and return to its project's board.
       queryClient.removeQueries({ queryKey: taskQueryKey(task.id) });
-      void queryClient.invalidateQueries({ queryKey: tasksQueryKey });
+      void queryClient.invalidateQueries({ queryKey: tasksQueryKey(task.projectId) });
+      void queryClient.invalidateQueries({ queryKey: projectsQueryKey });
       onOpenChange(false);
-      void navigate({ to: "/" });
+      const projects = queryClient.getQueryData<ProjectSummary[]>(projectsQueryKey);
+      const owner = projects?.find((p) => p.id === task.projectId);
+      if (owner) void navigate({ to: "/projects/$slug", params: { slug: owner.slug } });
+      else void navigate({ to: "/" });
     },
   });
 

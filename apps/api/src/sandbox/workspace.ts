@@ -2,7 +2,7 @@ import type { Agent, ProjectManifest } from "@sdlc-ai/shared";
 import { fullSetup, redactSecrets } from "@sdlc-ai/shared";
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
 import { AgentOutputError, SandboxError, TimeoutError, WorkspaceError } from "../errors.js";
-import { computeSetupHash, getCurrentConfigHash } from "../integrations/config-loader.js";
+import { computeSetupHash } from "../integrations/config-loader.js";
 import { TIMEOUTS } from "../pipeline/deps.js";
 import { tail } from "../pipeline/tasks.js";
 import type { GitHubService, Sandbox } from "../ports.js";
@@ -94,7 +94,7 @@ export async function prepareWorkspaceReuse(sandbox: Sandbox, github: GitHubServ
     const probe = await sandbox.exec(`test -d ${WORKSPACE}/.git && echo SDLC_HAS_GIT || echo SDLC_NO_GIT`, {});
     if (!probe.stdout.includes("SDLC_HAS_GIT")) {
       await prepareWorkspace(sandbox, github, options);
-      await markSetupDone(sandbox, options.manifest, resolveConfigHash(options));
+      await markSetupDone(sandbox, options.manifest, options.configHash ?? null);
       return;
     }
 
@@ -129,8 +129,8 @@ export async function prepareWorkspaceReuse(sandbox: Sandbox, github: GitHubServ
       if (reset.exitCode !== 0) throw new WorkspaceError(`git reset failed: ${reset.stderr.trim()}`);
     }
 
-    if (await isSetupFresh(sandbox, options.manifest, resolveConfigHash(options))) {
-      options.log(`Setup skipped (cached for this container · setup ${setupHash(options.manifest, resolveConfigHash(options)).slice(0, 12)})`);
+    if (await isSetupFresh(sandbox, options.manifest, options.configHash ?? null)) {
+      options.log(`Setup skipped (cached for this container · setup ${setupHash(options.manifest, options.configHash ?? null).slice(0, 12)})`);
     } else {
       for (const command of fullSetup(options.manifest)) {
         options.log(`$ ${command}`);
@@ -143,7 +143,7 @@ export async function prepareWorkspaceReuse(sandbox: Sandbox, github: GitHubServ
         if (result.timedOut) throw new WorkspaceError(`setup command timed out: ${command}`);
         if (result.exitCode !== 0) throw new WorkspaceError(`setup command failed (exit ${result.exitCode}): ${command}`);
       }
-      await markSetupDone(sandbox, options.manifest, resolveConfigHash(options));
+      await markSetupDone(sandbox, options.manifest, options.configHash ?? null);
     }
 
     for (const agent of options.agents) {
@@ -156,10 +156,6 @@ export async function prepareWorkspaceReuse(sandbox: Sandbox, github: GitHubServ
 /** setupHash = sha256(configHash + JSON(fullSetup) + imageStamp). */
 function setupHash(manifest: ProjectManifest, configHash?: string | null): string {
   return computeSetupHash(manifest, configHash, getImageStamp());
-}
-
-function resolveConfigHash(options: Pick<WorkspaceOptions, "configHash">): string | null {
-  return options.configHash ?? getCurrentConfigHash() ?? null;
 }
 
 async function isSetupFresh(sandbox: Sandbox, manifest: ProjectManifest, configHash?: string | null): Promise<boolean> {

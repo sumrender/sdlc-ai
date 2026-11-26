@@ -3,7 +3,7 @@ import { db } from "../db/index.js";
 import { questions, type QuestionRow, type TaskRow } from "../db/schema.js";
 import { AgentOutputError } from "../errors.js";
 import { bus } from "../events/bus.js";
-import { loadManifest } from "../integrations/manifest.js";
+import { getProjectConfigHash, loadManifestForSlug } from "../integrations/config-loader.js";
 import { TIMEOUTS } from "../pipeline/deps.js";
 import { answeredQuestion, getAgentRun, getTask, setStatus, updateTask } from "../pipeline/tasks.js";
 import { extractJsonBlock } from "../sandbox/opencode.js";
@@ -16,13 +16,14 @@ const REASK_PROMPT =
   '{ "plan": string | null, "question": { "text": string, "options": string[] | null } | null } and nothing else.';
 
 export const plannerBody: AgentBody = async (ctx) => {
-  const { deps, sandbox, log, task, project } = ctx;
+  const { github, sandbox, log, task, project } = ctx;
 
-  const manifest = await loadManifest(deps.github, project.defaultBranch);
+  const manifest = await loadManifestForSlug(project.slug);
+  const configHash = task.configHash ?? getProjectConfigHash(project.slug);
   if ((project as { reuseSandbox?: boolean }).reuseSandbox) {
-    await prepareWorkspaceReuse(sandbox, deps.github, { ref: project.defaultBranch, manifest, agents: ["PLANNER"], log });
+    await prepareWorkspaceReuse(sandbox, github, { ref: project.defaultBranch, manifest, agents: ["PLANNER"], log, configHash });
   } else {
-    await prepareWorkspace(sandbox, deps.github, { ref: project.defaultBranch, manifest, agents: ["PLANNER"], log });
+    await prepareWorkspace(sandbox, github, { ref: project.defaultBranch, manifest, agents: ["PLANNER"], log, configHash });
   }
 
   const answered = await answeredQuestion(task.id, task.stageEnteredAt);

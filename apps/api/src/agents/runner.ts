@@ -5,14 +5,17 @@ import { agentRuns, type AgentRunRow, type ProjectRow, type TaskRow } from "../d
 import { env } from "../env.js";
 import { AgentOutputError, SandboxError, TimeoutError, errorMessage } from "../errors.js";
 import { bus } from "../events/bus.js";
-import type { Sandbox } from "../ports.js";
+import type { GitHubService, Sandbox } from "../ports.js";
 import type { Deps } from "../pipeline/deps.js";
-import { failTask, getProject, getTask, nextAgentAttempt } from "../pipeline/tasks.js";
+import { failTask, getTask, nextAgentAttempt } from "../pipeline/tasks.js";
 import { runOpenCode, type OpenCodeResult } from "../sandbox/opencode.js";
 import { TaskSandboxPool } from "../sandbox/task-pool.js";
 
 export interface RunContext {
   deps: Deps;
+  github: GitHubService;
+  models: { developer: string; fast: string };
+  sandboxImage: string;
   sandbox: Sandbox;
   log: (line: string) => void;
   run: AgentRunRow;
@@ -23,8 +26,11 @@ export interface RunContext {
 export type AgentBody = (ctx: RunContext) => Promise<void>;
 
 export async function startAgentRun(deps: Deps, taskId: string, agent: Agent, body: AgentBody, attempt?: number): Promise<AgentRunRow> {
+  const task = await getTask(taskId);
+  if (!task) throw new Error("Task no longer exists");
+  const runtime = await deps.forProject(task.projectId);
   const resolved = attempt ?? (await nextAgentAttempt(taskId, agent));
-  const model = agent === "DEVELOPER" ? env.MODEL_DEVELOPER : env.MODEL_FAST;
+  const model = agent === "DEVELOPER" ? runtime.models.developer : runtime.models.fast;
   const [run] = await db
     .insert(agentRuns)
     .values({ taskId, agent, attempt: resolved, model, status: "QUEUED", createdAt: new Date() })
@@ -34,10 +40,11 @@ export async function startAgentRun(deps: Deps, taskId: string, agent: Agent, bo
 }
 
 async function execute(deps: Deps, run: AgentRunRow, body: AgentBody): Promise<void> {
+  let taskProjectId: string | undefined;
   const lines: string[] = [];
   const log = (line: string) => {
     lines.push(`${new Date().toISOString()} ${line}`);
-    bus.output(run.taskId, { agentRunId: run.id }, line);
+    bus.output(run.taskId, { agentRunId: run.id }, line, taskProjectId);
   };
 
   await db.update(agentRuns).set({ status: "RUNNING", startedAt: new Date() }).where(eq(agentRuns.id, run.id));
@@ -51,21 +58,26 @@ async function execute(deps: Deps, run: AgentRunRow, body: AgentBody): Promise<v
   try {
     const task = await getTask(run.taskId);
     if (!task) throw new Error("Task no longer exists");
-    const project = await getProject();
+    taskProjectId = task.projectId;
+    const runtime = await deps.forProject(task.projectId);
+    const { project, github, models, sandboxImage } = runtime;
     log(`Starting ${run.agent} (attempt ${run.attempt}, model ${run.model})`);
     const pool = deps.sandboxes instanceof TaskSandboxPool ? deps.sandboxes : null;
     const reuse = Boolean(pool && (project as { reuseSandbox?: boolean }).reuseSandbox);
     if (reuse && pool) {
-      const shared = await pool.acquire(task.id);
+      const shared = await pool.acquire(task.id, sandboxImage);
       sandbox = shared;
       log(`Reusing container ${shared.name} (setup once, fresh session)`);
       // Serialize the whole agent body per task: parallel reviewers share this
       // container's /workspace, and concurrent git fetch/checkout/reset +
       // opencode runs would interleave (mixed diffs, PR comment races).
-      await pool.withLock(task.id, () => body({ deps, sandbox: shared, log, run, task, project }));
+      await pool.withLock(task.id, () =>
+        body({ deps, github, models, sandboxImage, sandbox: shared, log, run, task, project }),
+      );
     } else {
       const own = await deps.sandboxes.create({
         name: `sdlc-${run.agent.toLowerCase().replace(/_/g, "-")}-${run.id.slice(0, 8)}-a${run.attempt}`,
+        image: sandboxImage,
         // The Planner's answer run resumes the question run's session from a new Sandbox.
         sessionVolume: run.agent === "PLANNER" ? `sdlc-ai-opencode-${run.taskId}` : undefined,
       });
@@ -75,7 +87,7 @@ async function execute(deps: Deps, run: AgentRunRow, body: AgentBody): Promise<v
       const poolForOwned = deps.sandboxes instanceof TaskSandboxPool ? deps.sandboxes : null;
       const releaseOwned = poolForOwned?.registerOwned(task.id, own) ?? null;
       try {
-        await body({ deps, sandbox: own, log, run, task, project });
+        await body({ deps, github, models, sandboxImage, sandbox: own, log, run, task, project });
       } finally {
         releaseOwned?.();
       }

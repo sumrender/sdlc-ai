@@ -11,7 +11,7 @@ import type { TaskRow } from "../db/schema.js";
 import { env } from "../env.js";
 import { AgentOutputError, TimeoutError } from "../errors.js";
 import { bus } from "../events/bus.js";
-import { loadManifest } from "../integrations/manifest.js";
+import { getProjectConfigHash, loadManifestForSlug } from "../integrations/config-loader.js";
 import { TIMEOUTS } from "../pipeline/deps.js";
 import { tail, updateTask } from "../pipeline/tasks.js";
 import { WORKSPACE } from "../sandbox/docker.js";
@@ -21,23 +21,25 @@ import { AGENT_DEFINITIONS } from "./definitions.js";
 import { invokeAgent, type AgentBody, type RunContext } from "./runner.js";
 
 export const developerBody: AgentBody = async (ctx) => {
-  const { deps, sandbox, log, task, project } = ctx;
+  const { github, sandbox, log, task, project } = ctx;
   const branch = task.branchName;
   if (!branch) throw new AgentOutputError("Task has no branch name");
 
-  const manifest = await loadManifest(deps.github, project.defaultBranch);
-  const branchExists = await deps.github.branchExists(branch);
+  const manifest = await loadManifestForSlug(project.slug);
+  const configHash = task.configHash ?? getProjectConfigHash(project.slug);
+  const branchExists = await github.branchExists(branch);
   const wsOptions = {
     ref: branchExists ? branch : project.defaultBranch,
     createBranch: branchExists ? undefined : branch,
     manifest,
     agents: ["DEVELOPER"] as const,
     log,
+    configHash,
   };
   if ((project as { reuseSandbox?: boolean }).reuseSandbox) {
-    await prepareWorkspaceReuse(sandbox, deps.github, { ...wsOptions, agents: [...wsOptions.agents] });
+    await prepareWorkspaceReuse(sandbox, github, { ...wsOptions, agents: [...wsOptions.agents] });
   } else {
-    await prepareWorkspace(sandbox, deps.github, { ...wsOptions, agents: [...wsOptions.agents] });
+    await prepareWorkspace(sandbox, github, { ...wsOptions, agents: [...wsOptions.agents] });
   }
 
   let result = await invokeAgent(ctx, {
@@ -62,13 +64,13 @@ export const developerBody: AgentBody = async (ctx) => {
   }
 
   log("Committing and pushing as sdlc-ai[bot]");
-  const { noChanges } = await commitAndPush(sandbox, deps.github, branch, task.title, log);
+  const { noChanges } = await commitAndPush(sandbox, github, branch, task.title, log);
   if (noChanges && !task.pullRequestNumber) throw new AgentOutputError("Developer produced no changes to commit");
 
   await updateTask(task.id, { pendingFeedback: null });
 
   if (!task.pullRequestNumber) {
-    const pr = await deps.github.createPullRequest({
+    const pr = await github.createPullRequest({
       title: task.title,
       head: branch,
       base: project.defaultBranch,

@@ -2,7 +2,7 @@ import {
   DEFAULT_MAX_CONCURRENT_TASKS,
   DEMO_TASK,
   buildProjectRow,
-  defineProject,
+  defineProjects,
   deployOverlapWarnings,
   findBlockingTasks,
   hashManifest,
@@ -29,7 +29,9 @@ import {
   type Finding,
   type HumanReviewDecision,
   type ProjectSettings,
+  type ProjectSummary,
   type Question,
+  type ReloadProjectsResult,
   type ResetDemoResult,
   type Review,
   type Reviewer,
@@ -129,76 +131,133 @@ const REVIEW_OUTPUT: Record<Reviewer, { verdict: Verdict; findings: Finding[] }>
   REVIEWER_BACKEND: { verdict: "PASS", findings: [{ severity: "INFO", message: "No backend paths touched in this change", file: "be/Controllers/TemplatesController.cs" }] },
 };
 
-const FIXTURE_CONFIG = defineProject({
-  version: 2,
-  repository: { owner: "sumrender", repo: "meme", defaultBranch: "main" },
-  root: { setup: ["npm ci"], checks: ["npm run lint"] },
-  stacks: {
-    frontend: {
-      dir: "fe",
-      paths: ["fe/**"],
-      setup: ["npm ci --prefix fe"],
-      checks: ["npm run build --prefix fe"],
-      unitTests: { command: "npx ng test --watch=false --browsers=ChromeHeadless", cwd: "fe", env: {}, optional: true },
-      integrations: [{ name: "Playwright E2E", notes: "npm run test:e2e in fe; E2E_START_SERVER boots ng serve" }],
+const FIXTURE_CONFIGS = defineProjects([
+  {
+    slug: "meme",
+    name: "Meme Studio",
+    version: 2,
+    repository: { owner: "sumrender", repo: "meme", defaultBranch: "main" },
+    root: { setup: ["npm ci"], checks: ["npm run lint"] },
+    stacks: {
+      frontend: {
+        dir: "fe",
+        paths: ["fe/**"],
+        setup: ["npm ci --prefix fe"],
+        checks: ["npm run build --prefix fe"],
+        unitTests: { command: "npx ng test --watch=false --browsers=ChromeHeadless", cwd: "fe", env: {}, optional: true },
+        integrations: [{ name: "Playwright E2E", notes: "npm run test:e2e in fe; E2E_START_SERVER boots ng serve" }],
+      },
+      backend: {
+        dir: "be",
+        paths: ["be/**"],
+        setup: ["dotnet restore be/Backend.csproj"],
+        checks: ["dotnet build be/Backend.csproj --no-restore"],
+        unitTests: { command: "dotnet test be/Tests/Backend.Tests.csproj --no-build", cwd: ".", env: {}, optional: true },
+        integrations: [{ name: "PostgreSQL 15 + EF Core", notes: "Code-first migrations; connection via be/.env" }],
+      },
     },
-    backend: {
-      dir: "be",
-      paths: ["be/**"],
-      setup: ["dotnet restore be/Backend.csproj"],
-      checks: ["dotnet build be/Backend.csproj --no-restore"],
-      unitTests: { command: "dotnet test be/Tests/Backend.Tests.csproj --no-build", cwd: ".", env: {}, optional: true },
-      integrations: [{ name: "PostgreSQL 15 + EF Core", notes: "Code-first migrations; connection via be/.env" }],
+    e2e: {
+      command: "npm run test:e2e",
+      cwd: "fe",
+      testDir: "e2e",
+      env: { CI: "1", BASE_URL: "http://localhost:5173" },
+      artifacts: ["fe/playwright-report", "fe/test-results"],
+      optional: false,
+    },
+    deploy: [
+      { target: "FE", provider: "CLOUDFLARE", pathPrefix: "fe/", url: null },
+      { target: "BE", provider: "RENDER", pathPrefix: "be/", url: null },
+    ],
+    deployProviders: {
+      cloudflare: { workerName: "meme-fe", origin: "https://meme-fe.stage.example" },
+      render: { serviceId: "srv-meme-be", origin: "https://meme-be.stage.example" },
     },
   },
-  e2e: {
-    command: "npm run test:e2e",
-    cwd: "fe",
-    testDir: "e2e",
-    env: { CI: "1", BASE_URL: "http://localhost:5173" },
-    artifacts: ["fe/playwright-report", "fe/test-results"],
-    optional: false,
+  {
+    slug: "sdlc-ai",
+    name: "SDLC Control Plane",
+    version: 2,
+    repository: { owner: "sumrender", repo: "sdlc-ai", defaultBranch: "main" },
+    root: { setup: ["pnpm install"], checks: ["pnpm -r typecheck"] },
+    stacks: {
+      frontend: {
+        dir: "apps/web",
+        paths: ["apps/web/**"],
+        setup: [],
+        checks: ["pnpm --filter @sdlc-ai/web build"],
+        unitTests: null,
+        integrations: [{ name: "Control-plane UI", notes: "Vite + React + TanStack Router/Query" }],
+      },
+      backend: {
+        dir: "apps/api",
+        paths: ["apps/api/**"],
+        setup: [],
+        checks: ["pnpm --filter @sdlc-ai/api build"],
+        unitTests: { command: "pnpm --filter @sdlc-ai/api test", cwd: ".", env: {}, optional: false },
+        integrations: [{ name: "PostgreSQL + Drizzle", notes: "Hono API with Drizzle ORM" }],
+      },
+    },
+    e2e: null,
   },
-});
+]);
 
-// Same single builder the API boot/seed use: the fixture row cannot drift.
-const FIXTURE_ROW = buildProjectRow(FIXTURE_CONFIG, {
-  FE_ORIGIN: "https://meme-fe.stage.example",
-  BE_ORIGIN: "https://meme-be.stage.example",
-});
-const FIXTURE_MANIFEST = toProjectManifest(FIXTURE_CONFIG);
-const FIXTURE_MANIFEST_HASH = hashManifest(FIXTURE_MANIFEST);
-const FIXTURE_MANIFEST_LOADED_AT = new Date().toISOString();
-const FIXTURE_DEPLOY_WARNINGS = deployOverlapWarnings(FIXTURE_ROW.deployTargets, FIXTURE_MANIFEST);
+interface FixtureProjectState {
+  id: string;
+  slug: string;
+  limit: number;
+  reuseSandbox: boolean;
+  baseSettings: ProjectSettings;
+  epoch: number;
+}
 
-const FIXTURE_SETTINGS: ProjectSettings = {
-  project: {
-    id: "fixture-project",
-    ...FIXTURE_ROW,
-    maxConcurrentTasks: DEFAULT_MAX_CONCURRENT_TASKS,
+const FIXTURE_PROJECTS: FixtureProjectState[] = FIXTURE_CONFIGS.map((config, idx) => {
+  const row = buildProjectRow(config);
+  const manifest = toProjectManifest(config);
+  const hash = hashManifest(manifest);
+  const loadedAt = new Date().toISOString();
+  const id = idx === 0 ? "fixture-project-meme" : `fixture-project-${config.slug}`;
+  return {
+    id,
+    slug: config.slug,
+    limit: DEFAULT_MAX_CONCURRENT_TASKS,
     reuseSandbox: true,
-    createdAt: new Date(Date.now() - 7 * 24 * 60 * 60_000).toISOString(),
-  },
-  github: { ok: true, login: "sdlc-ai[bot]" },
-  manifest: {
-    ok: true,
-    manifest: FIXTURE_MANIFEST,
-    hash: FIXTURE_MANIFEST_HASH,
-    source: "sdlc.config.ts",
-    loadedAt: FIXTURE_MANIFEST_LOADED_AT,
-  },
-  deployWarnings: FIXTURE_DEPLOY_WARNINGS,
-  deployProviders: { CLOUDFLARE: true, RENDER: false },
-  models: { developer: "claude-sonnet-5", fast: "claude-haiku-4-5-20251001" },
-  sandboxImage: "sdlc-ai-sandbox:local",
-  sandboxImageStatus: { ok: true, warning: null },
-  fakes: true,
-  activeTask: null,
-  activeTasks: [],
-  activeTaskCount: 0,
-    maxConcurrentTasks: DEFAULT_MAX_CONCURRENT_TASKS,
-    reuseSandbox: true,
-};
+    epoch: 1,
+    baseSettings: {
+      project: {
+        id,
+        ...row,
+        maxConcurrentTasks: DEFAULT_MAX_CONCURRENT_TASKS,
+        reuseSandbox: true,
+        active: true,
+        createdAt: new Date(Date.now() - (7 - idx) * 24 * 60 * 60_000).toISOString(),
+      },
+      github: { ok: true, login: "sdlc-ai[bot]" },
+      manifest: {
+        ok: true,
+        manifest,
+        hash,
+        source: "sdlc.config.ts",
+        loadedAt,
+      },
+      deployWarnings: deployOverlapWarnings(row.deployTargets, manifest),
+      deployProviders: {
+        CLOUDFLARE: Boolean(config.deployProviders.cloudflare),
+        RENDER: Boolean(config.deployProviders.render),
+      },
+      models: { developer: "claude-sonnet-5", fast: "claude-haiku-4-5-20251001" },
+      sandboxImage: "sdlc-ai-sandbox:local",
+      sandboxImageStatus: { ok: true, warning: null },
+      fakes: true,
+      activeTask: null,
+      activeTasks: [],
+      activeTaskCount: 0,
+      maxConcurrentTasks: DEFAULT_MAX_CONCURRENT_TASKS,
+      reuseSandbox: true,
+      globalActiveTaskCount: 0,
+      maxGlobalConcurrentTasks: 4,
+    },
+  };
+});
 
 const isReviewer = (agent: Agent): agent is Reviewer => (REVIEWERS as readonly Agent[]).includes(agent);
 
@@ -221,9 +280,13 @@ function makeReview(taskId: string, agentRunId: string, reviewer: Reviewer, verd
 }
 
 export function createFixtureApi(): FixtureApi {
+  const projectStates = FIXTURE_PROJECTS.map((p) => ({ ...p }));
+  const findProject = (idOrSlug: string): FixtureProjectState => {
+    const found = projectStates.find((p) => p.id === idOrSlug || p.slug === idOrSlug);
+    if (!found) throw new ApiRequestError(404, `Project ${idOrSlug} not found`, "NOT_FOUND");
+    return found;
+  };
   let tasks: BoardTask[] = [];
-  let fixtureLimit = DEFAULT_MAX_CONCURRENT_TASKS;
-  let fixtureReuseSandbox = true;
   const details = new Map<string, DetailState>();
   const sources = new Set<FixtureEventSource>();
   const timers = new Set<ReturnType<typeof setTimeout>>();
@@ -242,11 +305,12 @@ export function createFixtureApi(): FixtureApi {
     for (const source of sources) source.deliver(message);
   };
 
-  const emit = (taskId: string, type: EventType, payload: Record<string, unknown>) => {
+  const emit = (taskId: string, type: EventType, payload: Record<string, unknown>, explicitProjectId?: string) => {
+    const projectId = explicitProjectId ?? tasks.find((t) => t.id === taskId)?.projectId ?? projectStates[0]!.id;
     const event: Event = { id: crypto.randomUUID(), taskId, type, payload, createdAt: now() };
     tasks = applyEventToTasks(tasks, event).tasks;
     detailOf(taskId).events.push(event);
-    broadcast({ kind: "event", event });
+    broadcast({ kind: "event", projectId, event });
   };
 
   const after = (ms: number, fn: () => void) => {
@@ -271,8 +335,9 @@ export function createFixtureApi(): FixtureApi {
     const at = now();
     const state = detailOf(taskId);
     const id = ref.agentRunId ?? ref.testRunId ?? "task";
+    const projectId = tasks.find((t) => t.id === taskId)?.projectId ?? projectStates[0]!.id;
     state.output.set(id, [...(state.output.get(id) ?? []), `${at} ${line}`]);
-    broadcast({ kind: "agent_output", taskId, agentRunId: ref.agentRunId ?? null, testRunId: ref.testRunId ?? null, line, at });
+    broadcast({ kind: "agent_output", projectId, taskId, agentRunId: ref.agentRunId ?? null, testRunId: ref.testRunId ?? null, line, at });
   };
 
   const saveLog = (taskId: string, ref: { agentRunId?: string; testRunId?: string }, name: string) => {
@@ -525,19 +590,57 @@ export function createFixtureApi(): FixtureApi {
   };
 
   const client: ApiClient = {
-    listTasks: async () => tasks,    createTask: async (input: CreateTaskInput) => {
-      const task = makeTask(input);
-      emit(task.id, "TASK_CREATED", { task });
+    listProjects: async (): Promise<ProjectSummary[]> =>
+      projectStates.map((p) => {
+        const activeCount = tasks.filter((t) => t.projectId === p.id && t.stage !== "TODO" && t.stage !== "STAGING").length;
+        const manifest = p.baseSettings.manifest;
+        return {
+          id: p.id,
+          slug: p.slug,
+          name: p.baseSettings.project.name,
+          owner: p.baseSettings.project.owner,
+          repo: p.baseSettings.project.repo,
+          defaultBranch: p.baseSettings.project.defaultBranch,
+          active: true,
+          activeTaskCount: activeCount,
+          maxConcurrentTasks: p.limit,
+          configOk: manifest.ok,
+          configHash: manifest.ok ? (manifest.hash ?? null) : null,
+        };
+      }),
+    reloadProjectsConfig: async (): Promise<ReloadProjectsResult> => ({
+      ok: true,
+      source: "sdlc.config.ts",
+      loadedAt: now(),
+      projects: projectStates.map((p) => ({
+        slug: p.slug,
+        hash: p.baseSettings.manifest.ok ? (p.baseSettings.manifest.hash ?? "") : "",
+        epoch: p.epoch,
+      })),
+      changedSlugs: [],
+    }),
+    listTasks: async (projectId) => {
+      const p = findProject(projectId);
+      return tasks.filter((t) => t.projectId === p.id);
+    },
+    createTask: async (input: CreateTaskInput) => {
+      const p = findProject(input.projectId);
+      const task = makeTask({ ...input, projectId: p.id }, {
+        issueUrl: `https://github.com/${p.baseSettings.project.owner}/${p.baseSettings.project.repo}/issues/41`,
+      });
+      emit(task.id, "TASK_CREATED", { task }, p.id);
       return task;
     },
     startTask: async (taskId) => {
       const task = find(taskId);
       if (task.stage !== "TODO") throw new ApiRequestError(409, "Only TODO Tasks can be started", "NOT_TODO");
-      const blockers = findBlockingTasks(tasks, taskId, fixtureLimit);
+      const p = findProject(task.projectId);
+      const projectTasks = tasks.filter((t) => t.projectId === p.id);
+      const blockers = findBlockingTasks(projectTasks, taskId, p.limit);
       if (blockers.length > 0)
         throw new ApiRequestError(
           409,
-          `Max task limit reached (${blockers.length} of ${fixtureLimit} active). Increase the limit in Settings to start more tasks.`,
+          `Max task limit reached (${blockers.length} of ${p.limit} active). Increase the limit in Settings to start more tasks.`,
           MAX_CONCURRENT_TASKS_ERROR_CODE,
         );
       sequence([
@@ -562,19 +665,17 @@ export function createFixtureApi(): FixtureApi {
       after(STEP_MS * 2, () => developAndReview(taskId));
       return find(taskId);
     },
-    runDemo: async () => {
-      const task = await client.createTask({ ...DEMO_TASK });
+    runDemo: async (projectId) => {
+      const p = findProject(projectId);
+      const task = await client.createTask({ projectId: p.id, ...DEMO_TASK });
       return client.startTask(task.id);
     },
-    resetDemo: async (): Promise<ResetDemoResult> => {
-      for (const timer of timers) clearTimeout(timer);
-      for (const ticker of tickers.values()) clearInterval(ticker);
-      timers.clear();
-      tickers.clear();
-      const tasksDeleted = tasks.length;
-      tasks = [];
-      details.clear();
-      return { tasksDeleted, issuesClosed: tasksDeleted, pullRequestsClosed: 0, branchesDeleted: 0 };
+    resetDemo: async (projectId): Promise<ResetDemoResult> => {
+      const p = findProject(projectId);
+      const owned = tasks.filter((t) => t.projectId === p.id);
+      for (const t of owned) details.delete(t.id);
+      tasks = tasks.filter((t) => t.projectId !== p.id);
+      return { tasksDeleted: owned.length, issuesClosed: owned.length, pullRequestsClosed: 0, branchesDeleted: 0 };
     },
     getTask: async (taskId) => toDetail(taskId),
     retryTask: async (taskId) => {
@@ -707,26 +808,32 @@ export function createFixtureApi(): FixtureApi {
       develop(taskId);
       return toDetail(taskId);
     },
-    getProjectSettings: async () => {
-      const active = tasks.filter((t) => t.stage !== "TODO" && t.stage !== "STAGING");
+    getProjectSettings: async (projectId) => {
+      const p = findProject(projectId);
+      const active = tasks.filter((t) => t.projectId === p.id && t.stage !== "TODO" && t.stage !== "STAGING");
+      const globalActive = tasks.filter((t) => t.stage !== "TODO" && t.stage !== "STAGING");
       const summary = active.map((t) => ({ id: t.id, title: t.title, stage: t.stage }));
       return {
-        ...FIXTURE_SETTINGS,
-        project: { ...FIXTURE_SETTINGS.project, maxConcurrentTasks: fixtureLimit, reuseSandbox: fixtureReuseSandbox },
+        ...p.baseSettings,
+        project: { ...p.baseSettings.project, maxConcurrentTasks: p.limit, reuseSandbox: p.reuseSandbox },
         activeTask: summary[0] ?? null,
         activeTasks: summary,
         activeTaskCount: summary.length,
-        maxConcurrentTasks: fixtureLimit,
-        reuseSandbox: fixtureReuseSandbox,
+        maxConcurrentTasks: p.limit,
+        reuseSandbox: p.reuseSandbox,
+        globalActiveTaskCount: globalActive.length,
+        maxGlobalConcurrentTasks: 4,
       };
     },
-    updateMaxConcurrentTasks: async (limit: number) => {
-      fixtureLimit = limit;
-      return client.getProjectSettings();
+    updateMaxConcurrentTasks: async (projectId, limit: number) => {
+      const p = findProject(projectId);
+      p.limit = limit;
+      return client.getProjectSettings(p.id);
     },
-    updateReuseSandbox: async (reuse: boolean) => {
-      fixtureReuseSandbox = reuse;
-      return client.getProjectSettings();
+    updateReuseSandbox: async (projectId, reuse: boolean) => {
+      const p = findProject(projectId);
+      p.reuseSandbox = reuse;
+      return client.getProjectSettings(p.id);
     },
     fetchArtifactText: async (taskId, artifactId) => {
       const content = detailOf(taskId).logs.get(artifactId);
@@ -735,12 +842,20 @@ export function createFixtureApi(): FixtureApi {
     },
     artifactContentUrl: (taskId, artifactId) => `fixture://artifacts/${taskId}/${artifactId}`,
     testRunReportUrl: (taskId, testRunId, filePath) => `fixture://report/${taskId}/${testRunId}/${filePath}`,
-    eventsUrl: (taskId) => (taskId ? `${EVENTS_URL}?taskId=${taskId}` : EVENTS_URL),
+    eventsUrl: (scope) => {
+      const params = new URLSearchParams();
+      if (scope?.projectId) params.set("projectId", scope.projectId);
+      if (scope?.taskId) params.set("taskId", scope.taskId);
+      const qs = params.toString();
+      return qs ? `${EVENTS_URL}?${qs}` : EVENTS_URL;
+    },
   };
 
   const createEventSource = (url: string) => {
-    const taskId = new URL(url).searchParams.get("taskId");
-    const source = new FixtureEventSource(taskId, () => sources.delete(source));
+    const params = new URL(url).searchParams;
+    const taskId = params.get("taskId");
+    const projectId = params.get("projectId");
+    const source = new FixtureEventSource(taskId, projectId, () => sources.delete(source));
     sources.add(source);
     return source;
   };
@@ -763,6 +878,7 @@ class FixtureEventSource implements EventSourceLike {
 
   constructor(
     private readonly taskId: string | null,
+    private readonly projectId: string | null,
     private readonly onClose: () => void,
   ) {
     queueMicrotask(() => {
@@ -785,6 +901,7 @@ class FixtureEventSource implements EventSourceLike {
     if (this.readyState !== OPEN) return;
     const messageTaskId = message.kind === "event" ? message.event.taskId : message.taskId;
     if (this.taskId && messageTaskId !== this.taskId) return;
+    if (this.projectId && message.projectId !== this.projectId) return;
     const event = new MessageEvent(message.kind, { data: JSON.stringify(message) });
     for (const listener of this.listeners.get(message.kind) ?? []) listener(event);
   }
@@ -826,7 +943,7 @@ function makeTask(input: CreateTaskInput, overrides: Partial<BoardTask> = {}): B
   const title = input.title ?? (input.pullRef ? `Adopted PR ${input.pullRef}` : input.issueRef ? `Adopted issue ${input.issueRef}` : "Untitled");
   return {
     id,
-    projectId: "fixture-project",
+    projectId: input.projectId,
     title,
     description: input.description ?? "",
     stage: "TODO",
@@ -856,9 +973,11 @@ function makeTask(input: CreateTaskInput, overrides: Partial<BoardTask> = {}): B
 }
 
 function seedTasks(): BoardTask[] {
+  const memeId = FIXTURE_PROJECTS[0]!.id;
+  const sdlcId = FIXTURE_PROJECTS[1]!.id;
   return [
     makeTask(
-      { title: "Add dark mode toggle to the settings page", description: "Persist the choice and respect prefers-color-scheme." },
+      { projectId: memeId, title: "Add dark mode toggle to the settings page", description: "Persist the choice and respect prefers-color-scheme." },
       {
         stage: "STAGING",
         status: "COMPLETED",
@@ -871,7 +990,7 @@ function seedTasks(): BoardTask[] {
       },
     ),
     makeTask(
-      { title: "Sort templates by most recently used", description: "Order the gallery by lastUsedAt descending." },
+      { projectId: memeId, title: "Sort templates by most recently used", description: "Order the gallery by lastUsedAt descending." },
       {
         stage: "E2E",
         status: "FAILED",
@@ -885,7 +1004,7 @@ function seedTasks(): BoardTask[] {
       },
     ),
     makeTask(
-      { title: "Show the template count in the gallery header (rehearsal)", description: "Second rehearsal of the demo task." },
+      { projectId: memeId, title: "Show the template count in the gallery header (rehearsal)", description: "Second rehearsal of the demo task." },
       {
         stage: "HUMAN_REVIEW",
         status: "WAITING",
@@ -896,8 +1015,15 @@ function seedTasks(): BoardTask[] {
         stageEnteredAt: minutesAgo(15),
       },
     ),
-    makeTask({ title: "Fix flaky template search on empty query", description: "" }, { createdAt: minutesAgo(60) }),
-    makeTask({ title: "Paginate the template gallery", description: "" }, { createdAt: minutesAgo(30) }),
+    makeTask({ projectId: memeId, title: "Fix flaky template search on empty query", description: "" }, { createdAt: minutesAgo(60) }),
+    makeTask({ projectId: memeId, title: "Paginate the template gallery", description: "" }, { createdAt: minutesAgo(30) }),
+    makeTask(
+      { projectId: sdlcId, title: "Add project switcher badge to header", description: "Show owner/repo next to control plane title." },
+      {
+        issueUrl: "https://github.com/sumrender/sdlc-ai/issues/12",
+        createdAt: minutesAgo(20),
+      },
+    ),
   ];
 }
 

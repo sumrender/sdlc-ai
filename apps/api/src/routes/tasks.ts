@@ -15,7 +15,7 @@ import { parseBody } from "./app.js";
 export function taskRoutes(workflow: WorkflowService, store: ArtifactStore) {
   const r = new Hono();
 
-  r.get("/", async (c) => c.json(await workflow.listTasks()));
+  r.get("/", async (c) => c.json(await workflow.listTasks(c.req.query("projectId") || undefined)));
 
   // Board actions answer with a BoardTask; detail actions answer with the TaskDetail. Both match the shared schemas the web app parses.
   r.post("/", async (c) => {

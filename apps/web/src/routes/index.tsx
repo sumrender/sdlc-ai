@@ -1,39 +1,52 @@
+import { useEffect } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { KanbanBoard } from "~/components/KanbanBoard";
-import { useProjectSettings } from "~/lib/settings-query";
+import { useProjectsQuery } from "~/lib/settings-query";
+
+export const LAST_PROJECT_STORAGE_KEY = "sdlc:lastProjectSlug";
 
 export const Route = createFileRoute("/")({
-  component: BoardPage,
+  component: IndexRedirectPage,
 });
 
-function BoardPage() {
+function IndexRedirectPage() {
   const navigate = useNavigate();
-  const settings = useProjectSettings();
-  const openTask = (task: { id: string }) => void navigate({ to: "/tasks/$id", params: { id: task.id } });
-  const subtitle = settings.data
-    ? `One repo · ${settings.data.activeTaskCount} of ${settings.data.maxConcurrentTasks} task slots in use · tasks move automatically over SSE.`
-    : "One repo · tasks move automatically over SSE.";
-  return (
-    <div className="flex flex-col gap-3 p-4 lg:p-6">
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-[13px] text-muted-foreground">
-            <span>AI powered SDLC</span>
-            <span aria-hidden>/</span>
-            <span className="font-medium text-foreground">Board</span>
-          </nav>
-          <h1 className="mt-1.5 text-xl font-semibold tracking-tight">Board</h1>
-          <p className="mt-1 text-[13px] text-muted-foreground">{subtitle}</p>
+  const projectsQuery = useProjectsQuery();
+  const projects = projectsQuery.data ?? [];
+
+  useEffect(() => {
+    if (!projectsQuery.isSuccess || projects.length === 0) return;
+    const savedSlug = typeof window !== "undefined" ? window.localStorage.getItem(LAST_PROJECT_STORAGE_KEY) : null;
+    const preferred =
+      (savedSlug ? projects.find((p) => p.slug === savedSlug && p.active) : undefined) ??
+      projects.find((p) => p.active) ??
+      projects[0];
+    if (preferred) {
+      void navigate({ to: "/projects/$slug", params: { slug: preferred.slug }, replace: true });
+    }
+  }, [navigate, projects, projectsQuery.isSuccess]);
+
+  if (projectsQuery.isPending) {
+    return <p className="p-6 text-sm text-muted-foreground">Loading projects…</p>;
+  }
+  if (projectsQuery.isError) {
+    return (
+      <p role="alert" className="p-6 text-sm text-red-700">
+        Could not load projects: {projectsQuery.error.message}
+      </p>
+    );
+  }
+  if (projects.length === 0) {
+    return (
+      <div className="p-6">
+        <div role="alert" className="max-w-xl rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <p className="font-medium">No projects configured</p>
+          <p className="mt-1 text-amber-800">
+            Add at least one entry to <span className="font-mono text-xs">sdlc.config.ts</span> using{" "}
+            <span className="font-mono text-xs">defineProjects([...])</span> and restart or reload the API.
+          </p>
         </div>
-      </header>
-      <div className="overflow-x-auto rounded-lg border border-border bg-card">
-        <div className="flex min-w-max items-center gap-1 border-b border-border bg-secondary/40 px-3 pt-2 text-[13px]">
-          <span className="rounded-t-md bg-card px-3 py-1.5 font-medium text-foreground shadow-[inset_0_1px_0_hsl(var(--border)),inset_1px_0_0_hsl(var(--border)),inset_-1px_0_0_hsl(var(--border))]">Board</span>
-          <span className="px-3 py-1.5 text-muted-foreground">Activity</span>
-          <span className="px-3 py-1.5 text-muted-foreground">Deployments</span>
-        </div>
-        <KanbanBoard onOpenTask={openTask} />
       </div>
-    </div>
-  );
+    );
+  }
+  return <p className="p-6 text-sm text-muted-foreground">Opening project board…</p>;
 }

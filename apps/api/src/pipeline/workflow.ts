@@ -48,21 +48,20 @@ import {
 import { env } from "../env.js";
 import { HttpError, errorMessage } from "../errors.js";
 import { bus } from "../events/bus.js";
-import { loadManifest, loadManifestForTask } from "../integrations/manifest.js";
-import { getCurrentConfigHash, hashManifest } from "../integrations/config-loader.js";
+import { getProjectConfigHash, hashManifest, loadManifestForSlug, loadManifestForTask } from "../integrations/config-loader.js";
 import { TIMEOUTS, type Deps } from "./deps.js";
 import { computeTouchedTargets, isTerminalDeployment, pollDeployments } from "./deployments.js";
 import { describeSummary, e2eFeedback, startTestRun } from "./e2e.js";
 import { ensureCoverage } from "./e2e-coverage.js";
 import {
   failTask,
-  getProject,
   isActiveRun,
   isFailedRun,
   latestAgentRun,
   latestApproval,
   latestTestRun,
   pendingQuestion,
+  requireProject,
   requireTask,
   reviewsSince,
   setStatus,
@@ -120,6 +119,23 @@ export class WorkflowService {
   private async destroySharedSandbox(taskId: string): Promise<void> {
     const pool = this.deps.sandboxes instanceof TaskSandboxPool ? this.deps.sandboxes : null;
     if (pool) await pool.destroyTask(taskId).catch(() => undefined);
+  }
+
+  async clearWarmSandboxesForSlugs(slugs: readonly string[]): Promise<void> {
+    if (slugs.length === 0) return;
+    const pool = this.deps.sandboxes instanceof TaskSandboxPool ? this.deps.sandboxes : null;
+    if (!pool) return;
+    const matchedProjects = await db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(inArray(projects.slug, [...slugs]));
+    if (matchedProjects.length === 0) return;
+    const projectIds = matchedProjects.map((p) => p.id);
+    const projectTasks = await db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(inArray(tasks.projectId, projectIds));
+    await pool.destroyTasks(projectTasks.map((t) => t.id));
   }
 
   private evaluate(task: TaskRow): Promise<boolean> {
@@ -260,10 +276,10 @@ export class WorkflowService {
 
   private async requiredReviewers(task: TaskRow): Promise<Reviewer[]> {
     try {
-      const project = await getProject();
+      const { project, github } = await this.deps.forProject(task.projectId);
       // Task-pinned snapshot so reviewers in one stage share one manifest.
-      const manifest = await loadManifestForTask(this.deps.github, project.defaultBranch, task);
-      const changedFiles = task.pullRequestNumber ? await this.deps.github.getChangedFiles(task.pullRequestNumber).catch(() => [] as string[]) : [];
+      const manifest = await loadManifestForTask(project.slug, task);
+      const changedFiles = task.pullRequestNumber ? await github.getChangedFiles(task.pullRequestNumber).catch(() => [] as string[]) : [];
       return scopedReviewers(computeChangeScope(changedFiles, manifest));
     } catch {
       return [...REVIEWERS];
@@ -293,13 +309,13 @@ export class WorkflowService {
     if (!task.mergedCommitSha) {
       if (!task.pullRequestNumber || !task.branchName) throw new Error("Approved Task has no PR to merge");
       await setStatus(task, "RUNNING", { merging: true });
-      const changedFiles = await this.deps.github.getChangedFiles(task.pullRequestNumber);
-      const { sha } = await this.deps.github.squashMerge(task.pullRequestNumber, task.title);
-      await this.deps.github.deleteBranch(task.branchName);
+      const { project, github } = await this.deps.forProject(task.projectId);
+      const changedFiles = await github.getChangedFiles(task.pullRequestNumber);
+      const { sha } = await github.squashMerge(task.pullRequestNumber, task.title);
+      await github.deleteBranch(task.branchName);
       await updateTask(task.id, { mergedCommitSha: sha });
       await bus.emit(task.id, "MERGED", { sha, pullRequestNumber: task.pullRequestNumber, changedFiles });
 
-      const project = await getProject();
       const touched = computeTouchedTargets(changedFiles, project.deployTargets);
       if (touched.length > 0) {
         await db.insert(deployments).values(
@@ -345,17 +361,18 @@ export class WorkflowService {
   // ---- Operator actions -------------------------------------------------
 
   async createTask(input: CreateTaskInput): Promise<TaskRow> {
-    const project = await getProject();
+    const { project, github } = await this.deps.forProject(input.projectId);
     const id = randomUUID();
+    const configHash = getProjectConfigHash(project.slug) ?? null;
 
     // Adopt an existing PR (preferred) or issue: copy title/body from GitHub
     // instead of creating a new issue. PR head branch is adopted as-is.
     if (input.pullRef) {
       const number = parseGitHubRef(input.pullRef);
       if (number == null) throw new HttpError(400, `Could not parse PR reference "${input.pullRef}". Use a number or full PR URL.`);
-      const pr = await this.deps.github.getPullRequest(number);
+      const pr = await github.getPullRequest(number);
       if (pr.merged || pr.state !== "open") throw new HttpError(422, `PR #${number} is ${pr.merged ? "merged" : pr.state}; only open PRs can be adopted.`);
-      await this.throwIfDuplicate(pr.number, undefined, input.force, pr.head);
+      await this.throwIfDuplicate(project.id, pr.number, undefined, input.force, pr.head);
       const [task] = await db
         .insert(tasks)
         .values({
@@ -366,22 +383,26 @@ export class WorkflowService {
           branchName: pr.head,
           pullRequestNumber: pr.number,
           pullRequestUrl: pr.url,
-          configHash: getCurrentConfigHash() ?? null,
+          configHash,
           stageEnteredAt: new Date(),
         })
         .returning();
-      await this.deps.github.createComment(pr.number, `SDLC task started: ${env.CONTROL_PLANE_URL}/tasks/${id}`).catch(() => undefined);
-      await bus.emit(id, "TASK_CREATED", {
-        task: { ...task!, activeAgent: null, pendingQuestion: null, pendingApprovalId: null },
-      });
+      bus.bindTaskProject(id, project.id);
+      await github.createComment(pr.number, `SDLC task started: ${env.CONTROL_PLANE_URL}/tasks/${id}`).catch(() => undefined);
+      await bus.emit(
+        id,
+        "TASK_CREATED",
+        { task: { ...task!, activeAgent: null, pendingQuestion: null, pendingApprovalId: null } },
+        project.id,
+      );
       return task!;
     }
 
     if (input.issueRef) {
       const number = parseGitHubRef(input.issueRef);
       if (number == null) throw new HttpError(400, `Could not parse issue reference "${input.issueRef}". Use a number or full issue URL.`);
-      const issue = await this.deps.github.getIssue(number);
-      await this.throwIfDuplicate(undefined, issue.number, input.force);
+      const issue = await github.getIssue(number);
+      await this.throwIfDuplicate(project.id, undefined, issue.number, input.force);
       const title = issue.title.slice(0, 200);
       const branchName = `${BRANCH_PREFIX}${id.slice(0, 8)}-${slugify(title)}`;
       const [task] = await db
@@ -394,20 +415,24 @@ export class WorkflowService {
           branchName,
           issueNumber: issue.number,
           issueUrl: issue.url,
-          configHash: getCurrentConfigHash() ?? null,
+          configHash,
           stageEnteredAt: new Date(),
         })
         .returning();
-      await this.deps.github.createComment(issue.number, `SDLC task started: ${env.CONTROL_PLANE_URL}/tasks/${id}`).catch(() => undefined);
-      await bus.emit(id, "TASK_CREATED", {
-        task: { ...task!, activeAgent: null, pendingQuestion: null, pendingApprovalId: null },
-      });
+      bus.bindTaskProject(id, project.id);
+      await github.createComment(issue.number, `SDLC task started: ${env.CONTROL_PLANE_URL}/tasks/${id}`).catch(() => undefined);
+      await bus.emit(
+        id,
+        "TASK_CREATED",
+        { task: { ...task!, activeAgent: null, pendingQuestion: null, pendingApprovalId: null } },
+        project.id,
+      );
       return task!;
     }
 
     if (!input.title) throw new HttpError(400, "title: Required");
     const branchName = `${BRANCH_PREFIX}${id.slice(0, 8)}-${slugify(input.title)}`;
-    const issue = await this.deps.github.createIssue(
+    const issue = await github.createIssue(
       input.title,
       `${input.description || "_No description._"}\n\n---\nOpened by the SDLC control plane: ${env.CONTROL_PLANE_URL}/tasks/${id}`,
     );
@@ -421,17 +446,21 @@ export class WorkflowService {
         branchName,
         issueNumber: issue.number,
         issueUrl: issue.url,
-        configHash: getCurrentConfigHash() ?? null,
+        configHash,
         stageEnteredAt: new Date(),
       })
       .returning();
-    await bus.emit(id, "TASK_CREATED", {
-      task: { ...task!, activeAgent: null, pendingQuestion: null, pendingApprovalId: null },
-    });
+    bus.bindTaskProject(id, project.id);
+    await bus.emit(
+      id,
+      "TASK_CREATED",
+      { task: { ...task!, activeAgent: null, pendingQuestion: null, pendingApprovalId: null } },
+      project.id,
+    );
     return task!;
   }
 
-  private async throwIfDuplicate(pullNumber?: number, issueNumber?: number, force?: boolean, branchName?: string): Promise<void> {
+  private async throwIfDuplicate(projectId: string, pullNumber?: number, issueNumber?: number, force?: boolean, branchName?: string): Promise<void> {
     const conditions = [];
     const isPrOrBranchDuplicate = pullNumber != null || !!branchName;
     // PR/branch duplicates are never bypassed by force — they would share git state and PR.
@@ -444,7 +473,7 @@ export class WorkflowService {
     const [existing] = await db
       .select({ id: tasks.id, title: tasks.title, stage: tasks.stage })
       .from(tasks)
-      .where(or(...conditions))
+      .where(and(eq(tasks.projectId, projectId), or(...conditions)))
       .limit(1);
     if (existing) {
       const ref = pullNumber != null ? `PR #${pullNumber}` : issueNumber != null ? `issue #${issueNumber}` : `branch ${branchName}`;
@@ -456,33 +485,32 @@ export class WorkflowService {
     }
   }
 
-  async activeTasks(): Promise<TaskRow[]> {
-    return db
-      .select()
-      .from(tasks)
-      .where(inArray(tasks.stage, [...ACTIVE_STAGES]))
-      .orderBy(asc(tasks.createdAt));
+  async activeTasks(projectId?: string): Promise<TaskRow[]> {
+    const cond = projectId
+      ? and(eq(tasks.projectId, projectId), inArray(tasks.stage, [...ACTIVE_STAGES]))
+      : inArray(tasks.stage, [...ACTIVE_STAGES]);
+    return db.select().from(tasks).where(cond).orderBy(asc(tasks.createdAt));
   }
 
-  async activeTask(): Promise<TaskRow | null> {
-    const rows = await this.activeTasks();
+  async activeTask(projectId?: string): Promise<TaskRow | null> {
+    const rows = await this.activeTasks(projectId);
     return rows[0] ?? null;
   }
 
-  async getMaxConcurrentTasks(): Promise<number> {
-    const project = await getProject();
+  async getMaxConcurrentTasks(projectId: string): Promise<number> {
+    const project = await requireProject(projectId);
     return project.maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS;
   }
 
-  async updateMaxConcurrentTasks(limit: number): Promise<typeof projects.$inferSelect> {
-    const project = await getProject();
+  async updateMaxConcurrentTasks(projectId: string, limit: number): Promise<typeof projects.$inferSelect> {
+    const project = await requireProject(projectId);
     const [row] = await db.update(projects).set({ maxConcurrentTasks: limit }).where(eq(projects.id, project.id)).returning();
     if (!row) throw new HttpError(404, "Project not found");
     return row;
   }
 
-  async updateReuseSandbox(reuse: boolean): Promise<typeof projects.$inferSelect> {
-    const project = await getProject();
+  async updateReuseSandbox(projectId: string, reuse: boolean): Promise<typeof projects.$inferSelect> {
+    const project = await requireProject(projectId);
     const [row] = await db.update(projects).set({ reuseSandbox: reuse }).where(eq(projects.id, project.id)).returning();
     if (!row) throw new HttpError(404, "Project not found");
     return row;
@@ -491,29 +519,37 @@ export class WorkflowService {
   async start(taskId: string): Promise<TaskRow> {
     const task = await requireTask(taskId);
     if (task.stage !== "TODO") throw new HttpError(409, `Task is already in ${task.stage}`);
-    const project = await getProject();
+    const project = await requireProject(task.projectId);
     const limit = project.maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS;
-    const active = await this.activeTasks();
-    if (active.length >= limit)
+    const projectActive = await this.activeTasks(project.id);
+    if (projectActive.length >= limit) {
       throw new HttpError(
         409,
-        `Max task limit reached (${active.length} of ${limit} active). Increase the limit in Settings to start more tasks.`,
+        `Max task limit reached for ${project.name} (${projectActive.length} of ${limit} active). Increase the limit in Settings to start more tasks.`,
         MAX_CONCURRENT_TASKS_ERROR_CODE,
       );
+    }
+    const globalActive = await this.activeTasks();
+    if (globalActive.length >= env.MAX_GLOBAL_CONCURRENT_TASKS) {
+      throw new HttpError(
+        409,
+        `Global host task limit reached (${globalActive.length} of ${env.MAX_GLOBAL_CONCURRENT_TASKS} active across all projects). Wait for a running task to finish or increase MAX_GLOBAL_CONCURRENT_TASKS.`,
+        MAX_CONCURRENT_TASKS_ERROR_CODE,
+      );
+    }
     // Version-stamp the active config rev before the task leaves TODO.
-    await this.stampConfigHash(task);
+    await this.stampConfigHash(task, project.slug);
     const row = await transition(task, "PLANNING", "RUNNING");
     await this.advance(taskId);
     return (await requireTask(taskId)) ?? row;
   }
 
   /** Best-effort config stamp. Never blocks start; unstamped tasks fall back to live reads. */
-  private async stampConfigHash(task: TaskRow): Promise<void> {
+  private async stampConfigHash(task: TaskRow, slug: string): Promise<void> {
     try {
-      let hash = getCurrentConfigHash();
+      let hash = getProjectConfigHash(slug);
       if (!hash) {
-        const project = await getProject();
-        hash = hashManifest(await loadManifest(this.deps.github, project.defaultBranch));
+        hash = hashManifest(await loadManifestForSlug(slug));
       }
       if (hash && hash !== task.configHash) await updateTask(task.id, { configHash: hash });
     } catch (e) {
@@ -636,27 +672,31 @@ export class WorkflowService {
     // not leave the rows and Artifacts on disk.
     let issuesClosed = 0;
     let pullRequestsClosed = 0;
-    if (input.closePullRequest && task.pullRequestNumber && !task.mergedCommitSha) {
-      await this.deps.github
-        .closePullRequest(task.pullRequestNumber)
-        .then(() => pullRequestsClosed++)
-        .catch((e) => console.warn(`[workflow] failed to close PR #${task.pullRequestNumber}:`, errorMessage(e)));
-    }
-    if (input.closeIssue && task.issueNumber) {
-      await this.deps.github
-        .closeIssue(task.issueNumber)
-        .then(() => issuesClosed++)
-        .catch((e) => console.warn(`[workflow] failed to close issue #${task.issueNumber}:`, errorMessage(e)));
+    if ((input.closePullRequest && task.pullRequestNumber && !task.mergedCommitSha) || (input.closeIssue && task.issueNumber)) {
+      const { github } = await this.deps.forProject(task.projectId);
+      if (input.closePullRequest && task.pullRequestNumber && !task.mergedCommitSha) {
+        await github
+          .closePullRequest(task.pullRequestNumber)
+          .then(() => pullRequestsClosed++)
+          .catch((e) => console.warn(`[workflow] failed to close PR #${task.pullRequestNumber}:`, errorMessage(e)));
+      }
+      if (input.closeIssue && task.issueNumber) {
+        await github
+          .closeIssue(task.issueNumber)
+          .then(() => issuesClosed++)
+          .catch((e) => console.warn(`[workflow] failed to close issue #${task.issueNumber}:`, errorMessage(e)));
+      }
     }
 
     // 3. Remove everything. TASK_DELETED goes out before the delete: bus.emit
     // persists an Event row, and after the delete the FK would reject it. The
     // row is cascade-deleted moments later anyway — live SSE clients receive
     // the broadcast and drop the Task; refetching clients just see it gone.
-    await bus.emit(taskId, "TASK_DELETED", { title: task.title });
+    await bus.emit(taskId, "TASK_DELETED", { title: task.title }, task.projectId);
     await db.delete(tasks).where(eq(tasks.id, taskId));
     await this.deps.artifacts.clearTask(taskId);
     this.chains.delete(taskId);
+    bus.unbindTask(taskId);
     return { id: task.id, title: task.title, issuesClosed, pullRequestsClosed };
   }
 
@@ -779,59 +819,83 @@ export class WorkflowService {
     return review;
   }
 
-  async runDemo(): Promise<TaskRow> {
-    const project = await getProject();
+  async runDemo(projectId: string): Promise<TaskRow> {
+    const project = await requireProject(projectId);
     const limit = project.maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS;
-    const active = await this.activeTasks();
-    if (active.length >= limit)
+    const active = await this.activeTasks(project.id);
+    if (active.length >= limit) {
       throw new HttpError(
         409,
-        `Max task limit reached (${active.length} of ${limit} active). Increase the limit in Settings to start more tasks.`,
+        `Max task limit reached for ${project.name} (${active.length} of ${limit} active). Increase the limit in Settings to start more tasks.`,
         MAX_CONCURRENT_TASKS_ERROR_CODE,
       );
-    const task = await this.createTask({ ...DEMO_TASK });
+    }
+    const globalActive = await this.activeTasks();
+    if (globalActive.length >= env.MAX_GLOBAL_CONCURRENT_TASKS) {
+      throw new HttpError(
+        409,
+        `Global host task limit reached (${globalActive.length} of ${env.MAX_GLOBAL_CONCURRENT_TASKS} active across all projects).`,
+        MAX_CONCURRENT_TASKS_ERROR_CODE,
+      );
+    }
+    const task = await this.createTask({ projectId: project.id, ...DEMO_TASK });
     return this.start(task.id);
   }
 
-  async resetDemo(): Promise<ResetDemoResult> {
-    const all = await db.select().from(tasks);
+  async resetDemo(projectId: string): Promise<ResetDemoResult> {
+    const { project, github } = await this.deps.forProject(projectId);
+    const all = await db.select().from(tasks).where(eq(tasks.projectId, project.id));
     let issuesClosed = 0;
     let pullRequestsClosed = 0;
     for (const t of all) {
       if (t.mergedCommitSha) continue;
       if (t.pullRequestNumber) {
-        await this.deps.github.closePullRequest(t.pullRequestNumber).then(() => pullRequestsClosed++, logSwallow("close PR"));
+        await github.closePullRequest(t.pullRequestNumber).then(() => pullRequestsClosed++, logSwallow("close PR"));
       }
       if (t.issueNumber) {
-        await this.deps.github.closeIssue(t.issueNumber).then(() => issuesClosed++, logSwallow("close issue"));
+        await github.closeIssue(t.issueNumber).then(() => issuesClosed++, logSwallow("close issue"));
       }
     }
-    const branches = await this.deps.github.listBranches(BRANCH_PREFIX).catch(() => [] as string[]);
+    const branches = await github.listBranches(BRANCH_PREFIX).catch(() => [] as string[]);
     let branchesDeleted = 0;
-    for (const b of branches) await this.deps.github.deleteBranch(b).then(() => branchesDeleted++, logSwallow("delete branch"));
+    for (const b of branches) await github.deleteBranch(b).then(() => branchesDeleted++, logSwallow("delete branch"));
 
-    await db.delete(tasks);
-    await this.deps.artifacts.clear();
-    this.chains.clear();
+    await db.delete(tasks).where(eq(tasks.projectId, project.id));
     const pool = this.deps.sandboxes instanceof TaskSandboxPool ? this.deps.sandboxes : null;
-    if (pool) await pool.clear().catch(() => undefined);
+    for (const t of all) {
+      await this.deps.artifacts.clearTask(t.id);
+      this.chains.delete(t.id);
+      bus.unbindTask(t.id);
+    }
+    if (pool && all.length > 0) await pool.destroyTasks(all.map((t) => t.id)).catch(() => undefined);
     return { tasksDeleted: all.length, issuesClosed, pullRequestsClosed, branchesDeleted };
   }
 
   // ---- Reads ------------------------------------------------------------
 
   // BoardTask[]: each Task plus the active Agent and the Question/Approval a WAITING card is blocked on.
-  async listTasks() {
-    const rows = await db.select().from(tasks).orderBy(desc(tasks.createdAt));
+  async listTasks(projectIdOrSlug?: string) {
+    let resolvedProjectId: string | undefined;
+    if (projectIdOrSlug) {
+      const project = await requireProject(projectIdOrSlug);
+      resolvedProjectId = project.id;
+    }
+    const rows = resolvedProjectId
+      ? await db.select().from(tasks).where(eq(tasks.projectId, resolvedProjectId)).orderBy(desc(tasks.createdAt))
+      : await db.select().from(tasks).orderBy(desc(tasks.createdAt));
     if (rows.length === 0) return [];
+    const taskIds = rows.map((t) => t.id);
     const [activeRuns, pendingQuestions, pendingApprovals] = await Promise.all([
       db
         .select({ taskId: agentRuns.taskId, agent: agentRuns.agent })
         .from(agentRuns)
-        .where(inArray(agentRuns.status, ["QUEUED", "RUNNING"]))
+        .where(and(inArray(agentRuns.taskId, taskIds), inArray(agentRuns.status, ["QUEUED", "RUNNING"])))
         .orderBy(asc(agentRuns.createdAt)),
-      db.select().from(questions).where(eq(questions.status, "PENDING")),
-      db.select({ id: approvals.id, taskId: approvals.taskId }).from(approvals).where(eq(approvals.status, "PENDING")),
+      db.select().from(questions).where(and(inArray(questions.taskId, taskIds), eq(questions.status, "PENDING"))),
+      db
+        .select({ id: approvals.id, taskId: approvals.taskId })
+        .from(approvals)
+        .where(and(inArray(approvals.taskId, taskIds), eq(approvals.status, "PENDING"))),
     ]);
     return rows.map((t) => ({
       ...t,
@@ -842,7 +906,8 @@ export class WorkflowService {
   }
 
   async boardTask(taskId: string) {
-    const task = (await this.listTasks()).find((t) => t.id === taskId);
+    const taskRow = await requireTask(taskId);
+    const task = (await this.listTasks(taskRow.projectId)).find((t) => t.id === taskId);
     if (!task) throw new HttpError(404, "Task not found");
     return task;
   }

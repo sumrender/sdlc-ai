@@ -4,7 +4,7 @@ import { db } from "../db/index.js";
 import { tasks } from "../db/schema.js";
 import { AgentOutputError } from "../errors.js";
 import { bus } from "../events/bus.js";
-import { loadManifest } from "../integrations/manifest.js";
+import { getProjectConfigHash, loadManifestForSlug } from "../integrations/config-loader.js";
 import { TIMEOUTS } from "../pipeline/deps.js";
 import { tail } from "../pipeline/tasks.js";
 import { WORKSPACE } from "../sandbox/docker.js";
@@ -16,22 +16,23 @@ import { invokeAgent, type AgentBody } from "./runner.js";
 // One focused Playwright spec for the requested change, committed to the task
 // branch. Verification is implicit: the next Test Run executes the new spec.
 export const e2eTestWriterBody: AgentBody = async (ctx) => {
-  const { deps, sandbox, log, task, project } = ctx;
+  const { github, sandbox, log, task, project } = ctx;
   const branch = task.branchName;
   if (!branch) throw new AgentOutputError("Task has no branch name");
 
-  const manifest = await loadManifest(deps.github, project.defaultBranch);
+  const manifest = await loadManifestForSlug(project.slug);
   if (!manifest.e2e) {
     log("No e2e suite configured in the manifest; skipping spec writer");
     return;
   }
+  const configHash = task.configHash ?? getProjectConfigHash(project.slug);
   if ((project as { reuseSandbox?: boolean }).reuseSandbox) {
-    await prepareWorkspaceReuse(sandbox, deps.github, { ref: branch, manifest, agents: ["E2E_TEST_WRITER"], log });
+    await prepareWorkspaceReuse(sandbox, github, { ref: branch, manifest, agents: ["E2E_TEST_WRITER"], log, configHash });
   } else {
-    await prepareWorkspace(sandbox, deps.github, { ref: branch, manifest, agents: ["E2E_TEST_WRITER"], log });
+    await prepareWorkspace(sandbox, github, { ref: branch, manifest, agents: ["E2E_TEST_WRITER"], log, configHash });
   }
 
-  const changedFiles = task.pullRequestNumber ? await deps.github.getChangedFiles(task.pullRequestNumber).catch(() => [] as string[]) : [];
+  const changedFiles = task.pullRequestNumber ? await github.getChangedFiles(task.pullRequestNumber).catch(() => [] as string[]) : [];
   // Playwright only runs what lives under `<cwd>/<testDir>`; pointing the agent
   // at the bare cwd (e.g. "fe") aims it at the whole frontend app, where any
   // spec it writes is invisible to the suite.
@@ -64,7 +65,7 @@ export const e2eTestWriterBody: AgentBody = async (ctx) => {
   }
   // Commit only the detected spec: the reused workspace can hold stray
   // untracked files, and `git add -A` would push them onto the branch unseen.
-  const { noChanges } = await commitAndPush(sandbox, deps.github, branch, `Add E2E coverage for: ${task.title}`, log, specPath ? [specPath] : undefined);
+  const { noChanges } = await commitAndPush(sandbox, github, branch, `Add E2E coverage for: ${task.title}`, log, specPath ? [specPath] : undefined);
   if (noChanges && !specPath) throw new AgentOutputError("E2E test writer produced no spec to commit");
 
   const resolved = specPath ?? "e2e spec (path not reported)";
