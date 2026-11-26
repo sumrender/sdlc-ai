@@ -11,7 +11,6 @@ import type { TaskRow } from "../db/schema.js";
 import { env } from "../env.js";
 import { AgentOutputError, TimeoutError } from "../errors.js";
 import { bus } from "../events/bus.js";
-import { getProjectConfigHash, loadManifestForSlug } from "../integrations/config-loader.js";
 import { TIMEOUTS } from "../pipeline/deps.js";
 import { tail, updateTask } from "../pipeline/tasks.js";
 import { WORKSPACE } from "../sandbox/docker.js";
@@ -25,8 +24,8 @@ export const developerBody: AgentBody = async (ctx) => {
   const branch = task.branchName;
   if (!branch) throw new AgentOutputError("Task has no branch name");
 
-  const manifest = await loadManifestForSlug(project.slug);
-  const configHash = task.configHash ?? getProjectConfigHash(project.slug);
+  const manifest = task.manifestSnapshot ?? project.manifest;
+  const configHash = task.configHash ?? project.configHash;
   const branchExists = await github.branchExists(branch);
   const wsOptions = {
     ref: branchExists ? branch : project.defaultBranch,
@@ -36,7 +35,7 @@ export const developerBody: AgentBody = async (ctx) => {
     log,
     configHash,
   };
-  if ((project as { reuseSandbox?: boolean }).reuseSandbox) {
+  if (project.reuseSandbox) {
     await prepareWorkspaceReuse(sandbox, github, { ...wsOptions, agents: [...wsOptions.agents] });
   } else {
     await prepareWorkspace(sandbox, github, { ...wsOptions, agents: [...wsOptions.agents] });
@@ -98,11 +97,11 @@ async function runChecks(ctx: RunContext, manifest: ProjectManifest): Promise<{ 
   log(`Change scope: ${scopeLabel} (${changedFiles.length} changed file(s))`);
 
   const scopedChecksList = scopedChecks(manifest, scope).map((command) => ({ command, optional: false }));
-  // Per-gate resolve from host env (never boot); fail fast, redact `$` logs/payloads.
+  // Per-gate resolve strictly from this project's decrypted secrets (never host process.env).
   const missing: string[] = [];
   const allSecrets: string[] = [];
   const scopedTests = scopedUnitTests(manifest, scope).map((u) => {
-    const { resolved, missing: m, secrets } = resolveSecretEnv(u.env as EnvSpec, (name) => process.env[name]);
+    const { resolved, missing: m, secrets } = resolveSecretEnv(u.env as EnvSpec, (name) => ctx.secrets[name]);
     missing.push(...m);
     allSecrets.push(...secrets);
     return { command: u.command, cwd: u.cwd, env: resolved, optional: u.optional };

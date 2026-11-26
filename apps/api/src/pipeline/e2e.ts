@@ -6,7 +6,6 @@ import { db } from "../db/index.js";
 import { testRuns, type TestRunRow } from "../db/schema.js";
 import { AgentOutputError, SandboxError, TimeoutError, errorMessage } from "../errors.js";
 import { bus } from "../events/bus.js";
-import { getProjectConfigHash, loadManifestForTask } from "../integrations/config-loader.js";
 import type { E2eConfig } from "@sdlc-ai/shared";
 import type { Sandbox } from "../ports.js";
 import { WORKSPACE } from "../sandbox/docker.js";
@@ -48,9 +47,9 @@ async function execute(deps: Deps, run: TestRunRow): Promise<void> {
     const task = await getTask(run.taskId);
     if (!task) throw new Error("Task no longer exists");
     if (!task.branchName) throw new AgentOutputError("Task has no branch name");
-    const { project, github, sandboxImage } = await deps.forProject(task.projectId);
-    const manifest = await loadManifestForTask(project.slug, task);
-    const configHash = task.configHash ?? getProjectConfigHash(project.slug);
+    const { project, github, secrets: projectSecrets, sandboxImage } = await deps.forProject(task.projectId);
+    const manifest = task.manifestSnapshot ?? project.manifest;
+    const configHash = task.configHash ?? project.configHash;
     if (!manifest.e2e) {
       // Project has no e2e suite (optional): record a passing no-op run.
       exitCode = 0;
@@ -64,7 +63,7 @@ async function execute(deps: Deps, run: TestRunRow): Promise<void> {
 
       sandbox = null;
       const pool = deps.sandboxes instanceof TaskSandboxPool ? deps.sandboxes : null;
-      const reuse = Boolean(pool && (project as { reuseSandbox?: boolean }).reuseSandbox);
+      const reuse = Boolean(pool && project.reuseSandbox);
       if (reuse && pool) {
         sandbox = await pool.acquire(task.id, sandboxImage);
         log(`Reusing container ${sandbox.name} for Test Run`);
@@ -86,8 +85,8 @@ async function execute(deps: Deps, run: TestRunRow): Promise<void> {
       const forced = await forceVideoOn(sandbox, e2e, cwd, log);
       cleanupOverlay = forced.cleanup;
       const command = forced.command;
-      // Per-gate resolve from host env (never boot); fail fast.
-      const { resolved: env, missing, secrets } = resolveSecretEnv(e2e.env as EnvSpec, (name) => process.env[name]);
+      // Per-gate resolve strictly from this project's decrypted secrets (never host process.env).
+      const { resolved: env, missing, secrets } = resolveSecretEnv(e2e.env as EnvSpec, (name) => projectSecrets[name]);
       if (missing.length > 0) throw new AgentOutputError(`Missing required secrets for e2e: ${[...new Set(missing)].join(", ")}`);
       const scrub = (line: string) => (secrets.length > 0 ? redactSecrets(line, secrets) : line);
       log(scrub(`$ ${command}  (cwd ${cwd})`));

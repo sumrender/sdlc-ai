@@ -47,27 +47,20 @@ pnpm sandbox:build                 # build sdlc-ai-sandbox:local (auto-picks Doc
 OPENCODE_API_KEY=... pnpm sandbox:smoke   # verify the image once per change
 ```
 
-Then set `GITHUB_TOKEN`, `OPENCODE_API_KEY`, and the Render / Cloudflare variables in
-`.env`, set `SDLC_FAKES=false`, and `pnpm dev`.
+Then configure `SECRETS_ENCRYPTION_KEY` (32-byte key via `openssl rand -hex 32`), `OPENCODE_API_KEY`, and `SDLC_FAKES=false` in `.env`, run `pnpm dev`, and create/edit Projects directly from the web UI (`/projects/new` and Project Settings) with per-project GitHub tokens and deploy secrets.
 
-## Project config vs infrastructure
+## Project config & encrypted secrets
 
-Multiple projects are declared in `sdlc.config.ts` via `defineProjects([...])`
-(slug, repository, setup/checks, stacks, e2e, deploy targets, provider IDs,
-optional per-project models/sandbox image) — versioned, with each project's
-`rev <hash>` shown in Settings. Secrets and host infrastructure stay in `.env`
-(`DATABASE_URL`, `GITHUB_TOKEN`, `OPENCODE_API_KEY`, `MAX_GLOBAL_CONCURRENT_TASKS`,
-`SANDBOX_IMAGE`, …); see `.env.example`. A broken `sdlc.config.ts` surfaces as an
-amber warning in Settings instead of silently falling back. `sandbox/smoke.sh`
-lints the config and asserts the image build stamp (`sdlc.dockerfile-sha`).
+Projects (slug, repository, setup/checks/unit-test/E2E manifest, deploy targets, provider IDs, optional model/sandbox overrides) are stored in PostgreSQL and managed directly from the UI via CRUD endpoints (`POST /projects`, `PATCH /projects/:projectId`, archive/restore, permanent delete). Each Task snapshots its project's manifest at Start so mid-flight edits do not mutate running Tasks, and updating a project selectively clears warm sandbox containers for that project.
+
+Per-project credentials (`GITHUB_TOKEN`, `RENDER_API_KEY`, `CF_API_TOKEN`, `CF_ACCOUNT_ID`, plus custom secrets referenced via `{ env: "NAME" }` in unit tests/E2E) live in the `project_secrets` table encrypted with AES-256-GCM using `SECRETS_ENCRYPTION_KEY` (with optional `SECRETS_ENCRYPTION_KEY_PREVIOUS` for key rotation). Global infrastructure settings stay in `.env` (`DATABASE_URL`, `SECRETS_ENCRYPTION_KEY`, `OPENCODE_API_KEY`, `MAX_GLOBAL_CONCURRENT_TASKS`, `SANDBOX_IMAGE`); see `.env.example`.
 
 ### Residual risks (accepted)
 
-- Target drift with no config change (e.g. a lockfile bump) keeps reusing the
+- Target drift with no manifest change (e.g. a lockfile bump) keeps reusing the
   warm container ("Setup skipped") until the image is rebuilt.
-- No per-branch tooling experiments without a config change: config is
-  per-project; `POST /projects/reload` (or the Settings "Reload config" button)
-  picks up edits and clears warm containers only for changed projects.
+- No per-branch tooling experiments without editing the project's manifest:
+  edits in Settings clear warm containers for that project automatically.
 - Secrets resolve per gate into plaintext `docker exec -e` env, visible via
   `docker inspect` while the container runs.
 - Changing `e2e.cwd`/`testDir` mid-task orphans the `sdlc-pw.config.ts`

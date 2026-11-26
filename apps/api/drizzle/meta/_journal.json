@@ -78,6 +78,13 @@
       "when": 1795699371238,
       "tag": "0010_fuzzy_hydra",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1795702699191,
+      "tag": "0011_lyrical_scarlet_spider",
+      "breakpoints": true
     }
   ]
 }

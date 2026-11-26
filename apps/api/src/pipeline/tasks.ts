@@ -1,9 +1,10 @@
-import { and, asc, desc, eq, gte, ne } from "drizzle-orm";
-import type { Agent, RunStatus, Stage, TaskStatus } from "@sdlc-ai/shared";
+import { and, asc, desc, eq, gte, ne, sql } from "drizzle-orm";
+import type { Agent, RunStatus, SecretMeta, Stage, TaskStatus } from "@sdlc-ai/shared";
 import { db } from "../db/index.js";
 import {
   agentRuns,
   approvals,
+  projectSecrets,
   projects,
   questions,
   reviews,
@@ -42,7 +43,23 @@ export async function requireProject(idOrSlug: string): Promise<ProjectRow> {
 }
 
 export async function listProjects(): Promise<ProjectRow[]> {
-  return db.select().from(projects).orderBy(asc(projects.createdAt));
+  return db
+    .select()
+    .from(projects)
+    .orderBy(sql`${projects.archivedAt} is not null`, asc(projects.createdAt));
+}
+
+export async function listProjectSecretsMeta(projectId: string): Promise<SecretMeta[]> {
+  const rows = await db
+    .select({
+      name: projectSecrets.name,
+      hint: projectSecrets.hint,
+      updatedAt: projectSecrets.updatedAt,
+    })
+    .from(projectSecrets)
+    .where(eq(projectSecrets.projectId, projectId))
+    .orderBy(asc(projectSecrets.name));
+  return rows.map((r) => ({ name: r.name, hint: r.hint, updatedAt: r.updatedAt.toISOString() }));
 }
 
 export async function getTask(id: string): Promise<TaskRow | null> {

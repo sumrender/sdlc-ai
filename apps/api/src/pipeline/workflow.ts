@@ -48,7 +48,6 @@ import {
 import { env } from "../env.js";
 import { HttpError, errorMessage } from "../errors.js";
 import { bus } from "../events/bus.js";
-import { getProjectConfigHash, hashManifest, loadManifestForSlug, loadManifestForTask } from "../integrations/config-loader.js";
 import { TIMEOUTS, type Deps } from "./deps.js";
 import { computeTouchedTargets, isTerminalDeployment, pollDeployments } from "./deployments.js";
 import { describeSummary, e2eFeedback, startTestRun } from "./e2e.js";
@@ -121,21 +120,18 @@ export class WorkflowService {
     if (pool) await pool.destroyTask(taskId).catch(() => undefined);
   }
 
-  async clearWarmSandboxesForSlugs(slugs: readonly string[]): Promise<void> {
-    if (slugs.length === 0) return;
+  async clearWarmSandboxesForProject(projectId: string): Promise<void> {
     const pool = this.deps.sandboxes instanceof TaskSandboxPool ? this.deps.sandboxes : null;
     if (!pool) return;
-    const matchedProjects = await db
-      .select({ id: projects.id })
-      .from(projects)
-      .where(inArray(projects.slug, [...slugs]));
-    if (matchedProjects.length === 0) return;
-    const projectIds = matchedProjects.map((p) => p.id);
     const projectTasks = await db
       .select({ id: tasks.id })
       .from(tasks)
-      .where(inArray(tasks.projectId, projectIds));
+      .where(eq(tasks.projectId, projectId));
     await pool.destroyTasks(projectTasks.map((t) => t.id));
+  }
+
+  dropTaskChain(taskId: string): void {
+    this.chains.delete(taskId);
   }
 
   private evaluate(task: TaskRow): Promise<boolean> {
@@ -278,7 +274,7 @@ export class WorkflowService {
     try {
       const { project, github } = await this.deps.forProject(task.projectId);
       // Task-pinned snapshot so reviewers in one stage share one manifest.
-      const manifest = await loadManifestForTask(project.slug, task);
+      const manifest = task.manifestSnapshot ?? project.manifest;
       const changedFiles = task.pullRequestNumber ? await github.getChangedFiles(task.pullRequestNumber).catch(() => [] as string[]) : [];
       return scopedReviewers(computeChangeScope(changedFiles, manifest));
     } catch {
@@ -362,8 +358,11 @@ export class WorkflowService {
 
   async createTask(input: CreateTaskInput): Promise<TaskRow> {
     const { project, github } = await this.deps.forProject(input.projectId);
+    if (project.archivedAt) {
+      throw new HttpError(409, `Project "${project.name}" is archived. Restore it before creating tasks.`);
+    }
     const id = randomUUID();
-    const configHash = getProjectConfigHash(project.slug) ?? null;
+    const configHash = project.configHash;
 
     // Adopt an existing PR (preferred) or issue: copy title/body from GitHub
     // instead of creating a new issue. PR head branch is adopted as-is.
@@ -520,6 +519,9 @@ export class WorkflowService {
     const task = await requireTask(taskId);
     if (task.stage !== "TODO") throw new HttpError(409, `Task is already in ${task.stage}`);
     const project = await requireProject(task.projectId);
+    if (project.archivedAt) {
+      throw new HttpError(409, `Project "${project.name}" is archived. Restore it before starting tasks.`);
+    }
     const limit = project.maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS;
     const projectActive = await this.activeTasks(project.id);
     if (projectActive.length >= limit) {
@@ -537,24 +539,11 @@ export class WorkflowService {
         MAX_CONCURRENT_TASKS_ERROR_CODE,
       );
     }
-    // Version-stamp the active config rev before the task leaves TODO.
-    await this.stampConfigHash(task, project.slug);
+    // Version-stamp the active config rev and manifest snapshot before leaving TODO.
+    await updateTask(task.id, { configHash: project.configHash, manifestSnapshot: project.manifest });
     const row = await transition(task, "PLANNING", "RUNNING");
     await this.advance(taskId);
     return (await requireTask(taskId)) ?? row;
-  }
-
-  /** Best-effort config stamp. Never blocks start; unstamped tasks fall back to live reads. */
-  private async stampConfigHash(task: TaskRow, slug: string): Promise<void> {
-    try {
-      let hash = getProjectConfigHash(slug);
-      if (!hash) {
-        hash = hashManifest(await loadManifestForSlug(slug));
-      }
-      if (hash && hash !== task.configHash) await updateTask(task.id, { configHash: hash });
-    } catch (e) {
-      console.warn(`[workflow] config stamp skipped for task ${task.id}: ${errorMessage(e)}`);
-    }
   }
 
   async retry(taskId: string): Promise<TaskRow> {

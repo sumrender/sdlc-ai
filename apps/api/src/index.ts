@@ -1,10 +1,10 @@
 import { serve } from "@hono/node-server";
+import { isNull } from "drizzle-orm";
 import { ArtifactStore } from "./artifacts/store.js";
 import { closeDb, db, runMigrations } from "./db/index.js";
 import { projects } from "./db/schema.js";
 import { env } from "./env.js";
 import { FakeSandboxRunner } from "./fakes/index.js";
-import { startConfigWatch } from "./integrations/config-loader.js";
 import { ProjectRegistry } from "./integrations/project-registry.js";
 import { WorkflowService } from "./pipeline/workflow.js";
 import type { SandboxRunner } from "./ports.js";
@@ -41,34 +41,16 @@ async function main() {
     onFakeGitHub: fakeRunner ? (cloneUrl, gh) => fakeRunner.registerGitHub(cloneUrl, gh) : undefined,
   });
 
-  const configRead = await registry.syncProjects();
-  if (configRead.ok) {
-    const summary = configRead.list.map((p) => `${p.slug} (${p.hash.slice(0, 12)})`).join(", ");
-    console.log(`[api] loaded ${configRead.list.length} project(s) from ${configRead.source}: ${summary}`);
-  } else {
-    console.warn(`[api] local config unavailable: ${configRead.error}`);
-  }
-
   const workflow = new WorkflowService({
     sandboxes,
     forProject: (id) => registry.forProject(id),
     artifacts: new ArtifactStore(env.ARTIFACTS_DIR),
   });
 
-  // Config change bumps per-project epochs and drops warm containers only for changed slugs.
-  const stopConfigWatch = startConfigWatch({
-    onReload: async (changedSlugs, read) => {
-      await registry.syncProjects(read);
-      await workflow.clearWarmSandboxesForSlugs(changedSlugs);
-      console.log(`[config] ${read.source} changed [${changedSlugs.join(", ")}]; warm containers cleared for changed projects`);
-    },
-  });
-
   const app = createApp(workflow, registry);
 
-  const dbProjects = await db.select().from(projects);
+  const dbProjects = await db.select().from(projects).where(isNull(projects.archivedAt));
   for (const p of dbProjects) {
-    if (!p.active) continue;
     const runtime = await registry.forProject(p.id);
     const github = await runtime.github.connectionStatus();
     if (github.ok) console.log(`[api] [${p.slug}] GitHub connected as ${github.login} to ${p.owner}/${p.repo}`);
@@ -87,12 +69,11 @@ async function main() {
   const ticker = setInterval(() => void workflow.pollStaging().catch((e) => console.error("[api] staging poll failed", e)), STAGING_POLL_MS);
 
   const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
-    console.log(`[api] listening on http://localhost:${info.port} (${dbProjects.filter((p) => p.active).length} active project(s))`);
+    console.log(`[api] listening on http://localhost:${info.port} (${dbProjects.length} active project(s) in DB)`);
   });
 
   const shutdown = () => {
     clearInterval(ticker);
-    stopConfigWatch();
     server.close();
     void closeDb().finally(() => process.exit(0));
   };

@@ -1,45 +1,38 @@
 import { randomBytes } from "node:crypto";
-import { MANIFEST_PATH, defineProjects, toProjectManifest } from "@sdlc-ai/shared";
+import { MANIFEST_PATH, ProjectManifestSchema } from "@sdlc-ai/shared";
 import type { DeployLookup, DeployProvider, ExecOptions, ExecResult, GitHubService, Sandbox, SandboxRunner } from "../ports.js";
 
 // Scripted in-memory fakes so the whole pipeline can be driven over HTTP without Docker, GitHub or OpenCode Zen.
 
-// Single source for the fake manifest: a converted project config, so the
-// fakes can never drift from the config schema.
-const [FAKE_CONFIG] = defineProjects([
-  {
-    slug: "meme",
-    version: 2,
-    repository: { owner: "fake", repo: "meme", defaultBranch: "main" },
-    root: { setup: ["npm ci"], checks: [] },
-    stacks: {
-      frontend: {
-        dir: "fe",
-        paths: ["fe/**"],
-        setup: ["npm ci --prefix fe"],
-        checks: ["npm run build --prefix fe"],
-        unitTests: { command: "npx ng test --watch=false --browsers=ChromeHeadless", cwd: "fe", optional: true },
-        integrations: [{ name: "Playwright E2E", notes: "npm run test:e2e in fe; E2E_START_SERVER boots ng serve" }],
-      },
-      backend: {
-        dir: "be",
-        paths: ["be/**"],
-        setup: [],
-        checks: [],
-        unitTests: null,
-        integrations: [],
-      },
-    },
-    e2e: {
-      command: "npm run test:e2e",
-      cwd: "fe",
-      env: { E2E_START_SERVER: "true" },
-      artifacts: ["fe/playwright-report", "fe/test-results"],
-    },
+const FAKE_MANIFEST_OBJ = ProjectManifestSchema.parse({
+  version: 2,
+  setup: ["npm ci"],
+  checks: [],
+  frontend: {
+    dir: "fe",
+    paths: ["fe/**"],
+    setup: ["npm ci --prefix fe"],
+    checks: ["npm run build --prefix fe"],
+    unitTests: { command: "npx ng test --watch=false --browsers=ChromeHeadless", cwd: "fe", optional: true },
+    integrations: [{ name: "Playwright E2E", notes: "npm run test:e2e in fe; E2E_START_SERVER boots ng serve" }],
   },
-]);
+  backend: {
+    dir: "be",
+    paths: ["be/**"],
+    setup: [],
+    checks: [],
+    unitTests: null,
+    integrations: [],
+  },
+  e2e: {
+    command: "npm run test:e2e",
+    cwd: "fe",
+    env: { E2E_START_SERVER: "true" },
+    artifacts: ["fe/playwright-report", "fe/test-results"],
+  },
+});
 
-const FAKE_MANIFEST = JSON.stringify(toProjectManifest(FAKE_CONFIG!), null, 2);
+const FAKE_MANIFEST = JSON.stringify(FAKE_MANIFEST_OBJ, null, 2);
 
 const FAKE_DIFF = `diff --git a/fe/src/components/GalleryHeader.tsx b/fe/src/components/GalleryHeader.tsx
 --- a/fe/src/components/GalleryHeader.tsx

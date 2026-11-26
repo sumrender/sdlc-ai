@@ -1,5 +1,12 @@
 import { z } from "zod";
-import { FindingSchema, HumanReviewDecisionSchema, MaxConcurrentTasksSchema, ProjectSchema, VerdictSchema } from "./domain";
+import {
+  FindingSchema,
+  HumanReviewDecisionSchema,
+  MaxConcurrentTasksSchema,
+  ProjectSchema,
+  SecretMetaSchema,
+  VerdictSchema,
+} from "./domain";
 import { ProjectManifestSchema } from "./manifest";
 
 export const CreateTaskInputSchema = z.object({
@@ -114,6 +121,27 @@ export function parseGitHubRef(ref: string): number | null {
   return null;
 }
 
+export const TestConnectionInputSchema = z.object({
+  owner: z.string().trim().min(1),
+  repo: z.string().trim().min(1),
+  token: z.string().trim().min(1).optional(),
+  projectId: z.string().trim().min(1).optional(),
+});
+export type TestConnectionInput = z.infer<typeof TestConnectionInputSchema>;
+
+export const UpsertSecretInputSchema = z.object({
+  value: z.string().min(1),
+});
+export type UpsertSecretInput = z.infer<typeof UpsertSecretInputSchema>;
+
+export const DeleteProjectResultSchema = z.object({
+  id: z.string(),
+  slug: z.string(),
+  name: z.string(),
+  tasksDeleted: z.number().int(),
+});
+export type DeleteProjectResult = z.infer<typeof DeleteProjectResultSchema>;
+
 /** REST and SSE paths, relative to the API origin. Shared so client and server never drift. */
 export const API_PATHS = {
   health: "/health",
@@ -133,10 +161,18 @@ export const API_PATHS = {
   artifacts: (taskId: string) => `/tasks/${taskId}/artifacts`,
   artifactContent: (taskId: string, artifactId: string) => `/tasks/${taskId}/artifacts/${artifactId}/content`,
   projects: "/projects",
+  testProjectConnection: "/projects/test-connection",
   project: (projectId: string) => `/projects/${encodeURIComponent(projectId)}`,
+  updateProject: (projectId: string) => `/projects/${encodeURIComponent(projectId)}`,
+  deleteProject: (projectId: string) => `/projects/${encodeURIComponent(projectId)}`,
+  archiveProject: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/archive`,
+  restoreProject: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/restore`,
   updateProjectSettings: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/settings`,
   projectManifest: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/manifest`,
-  reloadProjectsConfig: "/projects/reload",
+  upsertProjectSecret: (projectId: string, name: string) =>
+    `/projects/${encodeURIComponent(projectId)}/secrets/${encodeURIComponent(name)}`,
+  deleteProjectSecret: (projectId: string, name: string) =>
+    `/projects/${encodeURIComponent(projectId)}/secrets/${encodeURIComponent(name)}`,
   runDemo: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/demo/run`,
   resetDemo: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/demo/reset`,
   events: "/events",
@@ -151,14 +187,14 @@ export const GitHubConnectionSchema = z.object({
 });
 export type GitHubConnection = z.infer<typeof GitHubConnectionSchema>;
 
-/** The Project Manifest as read from the local sdlc.config.ts, or why it could not be. */
+/** The Project Manifest stored in PostgreSQL (or config read error, if any). */
 export const ManifestReadSchema = z.discriminatedUnion("ok", [
   z.object({
     ok: z.literal(true),
     manifest: ProjectManifestSchema,
-    /** sha256 rev of the canonical manifest; absent until the first successful read. */
+    /** sha256 rev of the canonical manifest; absent until first saved. */
     hash: z.string().optional(),
-    /** Where the manifest came from: always sdlc.config.ts. */
+    /** Where the manifest came from: database. */
     source: z.string().optional(),
     loadedAt: z.string().optional(),
   }),
@@ -176,23 +212,12 @@ export const SandboxImageStatusSchema = z.object({
 });
 export type SandboxImageStatus = z.infer<typeof SandboxImageStatusSchema>;
 
-export const ReloadProjectsResultSchema = z.discriminatedUnion("ok", [
-  z.object({
-    ok: z.literal(true),
-    source: z.string(),
-    loadedAt: z.string(),
-    projects: z.array(z.object({ slug: z.string(), hash: z.string(), epoch: z.number().int() })),
-    changedSlugs: z.array(z.string()),
-  }),
-  z.object({ ok: z.literal(false), error: z.string() }),
-]);
-export type ReloadProjectsResult = z.infer<typeof ReloadProjectsResultSchema>;
-
 /** Response of GET /projects/:projectId: everything the Settings page shows. Nothing here is hardcoded in the UI. */
 export const ProjectSettingsSchema = z.object({
   project: ProjectSchema,
   github: GitHubConnectionSchema,
   manifest: ManifestReadSchema,
+  secrets: z.array(SecretMetaSchema).default([]),
   deployProviders: z.object({ CLOUDFLARE: z.boolean(), RENDER: z.boolean() }),
   models: z.object({ developer: z.string(), fast: z.string() }),
   sandboxImage: z.string(),

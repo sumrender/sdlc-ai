@@ -3,29 +3,39 @@ import {
   ApiErrorSchema,
   BoardTaskListSchema,
   BoardTaskSchema,
+  DeleteProjectResultSchema,
   DeleteTaskResultSchema,
+  GitHubConnectionSchema,
   ProjectSettingsSchema,
   ProjectSummaryListSchema,
-  ReloadProjectsResultSchema,
   ResetDemoResultSchema,
+  SecretMetaSchema,
   TaskDetailSchema,
   type AnswerQuestionInput,
   type BoardTask,
+  type CreateProjectInputRaw,
   type CreateTaskInput,
   type DecideApprovalInput,
   type DecideReviewInput,
+  type DeleteProjectResult,
   type DeleteTaskInput,
   type DeleteTaskResult,
+  type GitHubConnection,
   type ProjectSettings,
   type ProjectSummary,
-  type ReloadProjectsResult,
   type ResetDemoResult,
+  type SecretMeta,
   type SendReviewBackInput,
   type TaskDetail,
+  type TestConnectionInput,
+  type UpdateProjectInputRaw,
   type UpdateProjectSettingsInput,
   type UpdateReviewInput,
+  type UpsertSecretInput,
 } from "@sdlc-ai/shared";
-import type { ZodType, ZodTypeDef } from "zod";
+import { z, type ZodType, type ZodTypeDef } from "zod";
+
+const DeleteSecretResponseSchema = z.object({ ok: z.literal(true) });
 
 export class ApiRequestError extends Error {
   constructor(
@@ -40,7 +50,14 @@ export class ApiRequestError extends Error {
 
 export interface ApiClient {
   listProjects(): Promise<ProjectSummary[]>;
-  reloadProjectsConfig(): Promise<ReloadProjectsResult>;
+  testProjectConnection(input: TestConnectionInput): Promise<GitHubConnection>;
+  createProject(input: CreateProjectInputRaw): Promise<ProjectSettings>;
+  updateProject(projectId: string, input: UpdateProjectInputRaw): Promise<ProjectSettings>;
+  archiveProject(projectId: string): Promise<ProjectSettings>;
+  restoreProject(projectId: string): Promise<ProjectSettings>;
+  deleteProject(projectId: string): Promise<DeleteProjectResult>;
+  upsertProjectSecret(projectId: string, name: string, input: UpsertSecretInput): Promise<SecretMeta>;
+  deleteProjectSecret(projectId: string, name: string): Promise<void>;
   listTasks(projectId: string): Promise<BoardTask[]>;
   createTask(input: CreateTaskInput): Promise<BoardTask>;
   startTask(taskId: string): Promise<BoardTask>;
@@ -64,7 +81,7 @@ export interface ApiClient {
   updateReview(taskId: string, reviewId: string, input: UpdateReviewInput): Promise<TaskDetail>;
   /** Send one (possibly edited) Review back to the Developer. Rejects the pending Approval and moves to DEVELOPMENT. */
   sendReviewBack(taskId: string, reviewId: string, input: SendReviewBackInput): Promise<TaskDetail>;
-  /** The Project, its GitHub connection, Deploy Targets, and the Manifest as read from sdlc.config.ts. */
+  /** The Project, its GitHub connection, Deploy Targets, Secrets hints, and DB-backed Manifest. */
   getProjectSettings(projectId: string): Promise<ProjectSettings>;
   /** Updates the max concurrent Tasks limit. Returns the refreshed Settings. */
   updateMaxConcurrentTasks(projectId: string, limit: number): Promise<ProjectSettings>;
@@ -108,7 +125,18 @@ export function createApiClient({ origin, fetch = globalThis.fetch }: ApiClientO
 
   return {
     listProjects: () => request(API_PATHS.projects, ProjectSummaryListSchema),
-    reloadProjectsConfig: () => post(API_PATHS.reloadProjectsConfig, ReloadProjectsResultSchema),
+    testProjectConnection: (input) => post(API_PATHS.testProjectConnection, GitHubConnectionSchema, input),
+    createProject: (input) => post(API_PATHS.projects, ProjectSettingsSchema, input),
+    updateProject: (projectId, input) =>
+      request(API_PATHS.updateProject(projectId), ProjectSettingsSchema, { method: "PATCH", body: JSON.stringify(input) }),
+    archiveProject: (projectId) => post(API_PATHS.archiveProject(projectId), ProjectSettingsSchema),
+    restoreProject: (projectId) => post(API_PATHS.restoreProject(projectId), ProjectSettingsSchema),
+    deleteProject: (projectId) => request(API_PATHS.deleteProject(projectId), DeleteProjectResultSchema, { method: "DELETE" }),
+    upsertProjectSecret: (projectId, name, input) =>
+      request(API_PATHS.upsertProjectSecret(projectId, name), SecretMetaSchema, { method: "PUT", body: JSON.stringify(input) }),
+    deleteProjectSecret: async (projectId, name) => {
+      await request(API_PATHS.deleteProjectSecret(projectId, name), DeleteSecretResponseSchema, { method: "DELETE" });
+    },
     listTasks: (projectId) => request(`${API_PATHS.tasks}?projectId=${encodeURIComponent(projectId)}`, BoardTaskListSchema),
     createTask: (input) => post(API_PATHS.tasks, BoardTaskSchema, input),
     startTask: (taskId) => post(API_PATHS.startTask(taskId), BoardTaskSchema),

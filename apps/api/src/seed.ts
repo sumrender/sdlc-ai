@@ -4,13 +4,11 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import zlib from "node:zlib";
-import { eq } from "drizzle-orm";
-import { REVIEWERS, type Agent, type EventType, type Finding, type RunStatus, type Stage, type TaskStatus, type Verdict } from "@sdlc-ai/shared";
+import { REVIEWERS, hashManifest, ProjectManifestSchema, type Agent, type EventType, type Finding, type RunStatus, type Stage, type TaskStatus, type Verdict } from "@sdlc-ai/shared";
 import { ArtifactStore } from "./artifacts/store.js";
 import { closeDb, db, runMigrations } from "./db/index.js";
 import { agentRuns, approvals, deployments, events, projects, questions, reviews, tasks, testRuns, type ProjectRow, type TaskRow } from "./db/schema.js";
 import { env } from "./env.js";
-import { ProjectRegistry } from "./integrations/project-registry.js";
 
 const store = new ArtifactStore(env.ARTIFACTS_DIR);
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000);
@@ -403,12 +401,114 @@ function crc32(buf: Buffer): number {
 }
 
 async function syncSeedProjects(): Promise<ProjectRow[]> {
-  const registry = new ProjectRegistry({ fakes: env.SDLC_FAKES, env });
-  const read = await registry.syncProjects();
-  if (!read.ok) throw new Error(`Cannot seed without a valid sdlc.config.ts: ${read.error}`);
-  const rows = await db.select().from(projects).where(eq(projects.active, true));
-  if (rows.length === 0) throw new Error("No active projects synced from sdlc.config.ts");
-  return rows;
+  const memeManifest = ProjectManifestSchema.parse({
+    version: 2,
+    setup: ["npm ci"],
+    checks: [],
+    frontend: {
+      dir: "fe",
+      paths: ["fe/**"],
+      setup: ["npm ci --prefix fe"],
+      checks: ["npm run build --prefix fe"],
+      unitTests: { command: "npx ng test --watch=false --browsers=ChromeHeadless", cwd: "fe", env: {}, optional: true },
+      integrations: [{ name: "Playwright E2E", notes: "npm run test:e2e in fe; E2E_START_SERVER boots ng serve" }],
+    },
+    backend: {
+      dir: "be",
+      paths: ["be/**"],
+      setup: ["dotnet restore be/Backend.csproj"],
+      checks: ["dotnet build be/Backend.csproj --no-restore"],
+      unitTests: { command: "dotnet test be/Tests/Backend.Tests.csproj --no-build", cwd: ".", env: {}, optional: true },
+      integrations: [{ name: "PostgreSQL + EF Core", notes: "Code-first migrations; connection via be/.env" }],
+    },
+    e2e: {
+      command: "npm run test:e2e",
+      cwd: "fe",
+      testDir: "e2e",
+      env: { E2E_START_SERVER: "true" },
+      artifacts: ["fe/playwright-report", "fe/test-results"],
+      optional: false,
+    },
+  });
+
+  const sdlcManifest = ProjectManifestSchema.parse({
+    version: 2,
+    setup: ["pnpm install"],
+    checks: ["pnpm -r typecheck"],
+    frontend: {
+      dir: "apps/web",
+      paths: ["apps/web/**"],
+      setup: [],
+      checks: ["pnpm --filter @sdlc-ai/web build"],
+      unitTests: null,
+      integrations: [{ name: "Control-plane UI", notes: "Vite + React + TanStack Router/Query" }],
+    },
+    backend: {
+      dir: "apps/api",
+      paths: ["apps/api/**"],
+      setup: [],
+      checks: ["pnpm --filter @sdlc-ai/api build"],
+      unitTests: { command: "pnpm --filter @sdlc-ai/api test", cwd: ".", env: {}, optional: false },
+      integrations: [{ name: "PostgreSQL + Drizzle", notes: "Hono API with Drizzle ORM" }],
+    },
+    e2e: null,
+  });
+
+  const defs = [
+    {
+      slug: "meme",
+      name: "Meme Studio",
+      owner: "sumrender",
+      repo: "meme",
+      defaultBranch: "main",
+      manifest: memeManifest,
+      deployTargets: [
+        { target: "FE" as const, provider: "CLOUDFLARE" as const, pathPrefix: "fe/", url: "https://meme-fe.stage.example" },
+        { target: "BE" as const, provider: "RENDER" as const, pathPrefix: "be/", url: "https://meme-be.stage.example" },
+      ],
+      deployProviders: {
+        cloudflare: { workerName: "meme-fe", origin: "https://meme-fe.stage.example" },
+        render: { serviceId: "srv-meme-be", origin: "https://meme-be.stage.example" },
+      },
+      configHash: hashManifest(memeManifest),
+    },
+    {
+      slug: "sdlc-ai",
+      name: "SDLC Control Plane",
+      owner: "sumrender",
+      repo: "sdlc-ai",
+      defaultBranch: "main",
+      manifest: sdlcManifest,
+      deployTargets: [],
+      deployProviders: {},
+      configHash: hashManifest(sdlcManifest),
+    },
+  ];
+
+  const out: ProjectRow[] = [];
+  for (const def of defs) {
+    const [row] = await db
+      .insert(projects)
+      .values(def)
+      .onConflictDoUpdate({
+        target: projects.slug,
+        set: {
+          name: def.name,
+          owner: def.owner,
+          repo: def.repo,
+          defaultBranch: def.defaultBranch,
+          manifest: def.manifest,
+          deployTargets: def.deployTargets,
+          deployProviders: def.deployProviders,
+          configHash: def.configHash,
+          archivedAt: null,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    out.push(row!);
+  }
+  return out;
 }
 
 main()

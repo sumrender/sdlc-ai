@@ -24,6 +24,8 @@ const task: TaskRow = {
   pullRequestNumber: 58,
   pullRequestUrl: null,
   mergedCommitSha: null,
+  configHash: null,
+  manifestSnapshot: null,
   e2eRejectLoopUsed: false,
   e2eCoverageCheckedAt: null,
   e2eGeneratedSpecPath: null,

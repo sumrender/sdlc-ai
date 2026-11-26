@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { defineProjects } from "@sdlc-ai/shared";
+import { ProjectManifestSchema } from "@sdlc-ai/shared";
 import type { ProjectRow } from "../db/schema.js";
 
 process.env.DATABASE_URL ??= "postgres://sdlc:sdlc@127.0.0.1:5432/sdlc_test";
@@ -16,11 +16,17 @@ const PROJECTS: Record<string, ProjectRow> = {
     owner: "org-a",
     repo: "alpha-repo",
     defaultBranch: "main",
+    manifest: ProjectManifestSchema.parse({ setup: ["npm ci"], checks: ["npm test"] }),
     deployTargets: [],
+    deployProviders: { render: { serviceId: "srv-alpha", origin: "https://alpha.example" } },
+    models: { developer: "alpha-dev", fast: "alpha-fast" },
+    sandboxImage: "alpha-sandbox:v1",
+    configHash: "hash-alpha",
     maxConcurrentTasks: 3,
     reuseSandbox: true,
-    active: true,
+    archivedAt: null,
     createdAt: now,
+    updatedAt: now,
   },
   beta: {
     id: "22222222-2222-2222-2222-222222222222",
@@ -29,43 +35,29 @@ const PROJECTS: Record<string, ProjectRow> = {
     owner: "org-b",
     repo: "beta-repo",
     defaultBranch: "develop",
+    manifest: ProjectManifestSchema.parse({ setup: [], checks: [] }),
     deployTargets: [],
+    deployProviders: { cloudflare: { workerName: "beta-worker", origin: "https://beta.example" } },
+    models: null,
+    sandboxImage: null,
+    configHash: "hash-beta",
     maxConcurrentTasks: 2,
     reuseSandbox: false,
-    active: true,
+    archivedAt: null,
     createdAt: now,
+    updatedAt: now,
   },
 };
 
-const CONFIGS = defineProjects([
-  {
-    slug: "alpha",
-    repository: { owner: "org-a", repo: "alpha-repo", defaultBranch: "main" },
-    github: { tokenEnv: "GH_ALPHA_TOKEN" },
-    deployProviders: {
-      render: { serviceId: "srv-alpha", apiKeyEnv: "RENDER_ALPHA_KEY", origin: "https://alpha.example" },
-    },
-    sandbox: { image: "alpha-sandbox:v1", reuse: true },
-    models: { developer: "alpha-dev", fast: "alpha-fast" },
-  },
-  {
-    slug: "beta",
-    repository: { owner: "org-b", repo: "beta-repo", defaultBranch: "develop" },
-    github: { tokenEnv: "GH_BETA_TOKEN" },
-    deployProviders: {
-      cloudflare: { workerName: "beta-worker", apiTokenEnv: "CF_BETA_TOKEN", accountIdEnv: "CF_BETA_ACCT", origin: "https://beta.example" },
-    },
-  },
-]);
-
-describe("ProjectRegistry per-project runtime isolation", () => {
-  it("resolves distinct GitHub repos, deploy providers, images, and models per project", async () => {
-    const envVars: Record<string, string> = {
-      GH_ALPHA_TOKEN: "ghp_alpha",
-      RENDER_ALPHA_KEY: "rnd_alpha",
-      CF_BETA_TOKEN: "cf_beta",
-      CF_BETA_ACCT: "acct_beta",
-      // GH_BETA_TOKEN intentionally omitted to verify unconfigured fallback
+describe("ProjectRegistry DB-backed multi-project isolation", () => {
+  it("isolates GitHub credentials, secrets, deploy providers, images, and models per project", async () => {
+    const projectSecretsById: Record<string, Record<string, string>> = {
+      [PROJECTS.alpha!.id]: { GITHUB_TOKEN: "ghp_alpha", RENDER_API_KEY: "rnd_alpha" },
+      [PROJECTS.beta!.id]: {
+        // GITHUB_TOKEN intentionally omitted to verify UnconfiguredGitHubService fallback
+        CF_API_TOKEN: "cf_beta",
+        CF_ACCOUNT_ID: "acct_beta",
+      },
     };
 
     const registry = new ProjectRegistry({
@@ -76,8 +68,7 @@ describe("ProjectRegistry per-project runtime isolation", () => {
         if (!match) throw new Error(`missing ${idOrSlug}`);
         return match;
       },
-      envLookup: (name) => envVars[name],
-      getConfig: (slug) => CONFIGS.find((c) => c.slug === slug) ?? null,
+      loadSecrets: async (projectId) => projectSecretsById[projectId] ?? {},
     });
 
     const alpha = await registry.forProject("alpha");
@@ -86,41 +77,41 @@ describe("ProjectRegistry per-project runtime isolation", () => {
     assert.equal(Boolean(alpha.deployProviders.CLOUDFLARE), false);
     assert.equal(alpha.sandboxImage, "alpha-sandbox:v1");
     assert.deepEqual(alpha.models, { developer: "alpha-dev", fast: "alpha-fast" });
+    assert.equal(alpha.secrets.GITHUB_TOKEN, "ghp_alpha");
 
     const beta = await registry.forProject(PROJECTS.beta!.id);
     assert.equal(beta.github.cloneUrl(), "https://github.com/org-b/beta-repo.git");
     const betaStatus = await beta.github.connectionStatus();
     assert.equal(betaStatus.ok, false);
-    assert.match(betaStatus.error ?? "", /GH_BETA_TOKEN/);
+    assert.match(betaStatus.error ?? "", /GITHUB_TOKEN/);
+    assert.equal(beta.secrets.GITHUB_TOKEN, undefined);
     assert.equal(Boolean(beta.deployProviders.CLOUDFLARE), true);
     assert.equal(Boolean(beta.deployProviders.RENDER), false);
     assert.equal(beta.sandboxImage, "default-sandbox:local");
     assert.deepEqual(beta.models, { developer: "default-dev", fast: "default-fast" });
   });
 
-  it("registers distinct FakeGitHubService instances per project in fakes mode", async () => {
-    const fakeUrls: string[] = [];
+  it("tests ad-hoc or stored GitHub connections and supports cache invalidation", async () => {
     const registry = new ProjectRegistry({
       fakes: true,
       env: { SANDBOX_IMAGE: "default-sandbox:local", MODEL_DEVELOPER: "default-dev", MODEL_FAST: "default-fast" },
-      resolveProject: async (idOrSlug) => Object.values(PROJECTS).find((p) => p.id === idOrSlug || p.slug === idOrSlug)!,
-      getConfig: (slug) => CONFIGS.find((c) => c.slug === slug) ?? null,
-      onFakeGitHub: (url) => fakeUrls.push(url),
+      resolveProject: async (idOrSlug) => {
+        const match = Object.values(PROJECTS).find((p) => p.id === idOrSlug || p.slug === idOrSlug);
+        if (!match) throw new Error(`missing ${idOrSlug}`);
+        return match;
+      },
+      loadSecrets: async () => ({ GITHUB_TOKEN: "ghp_test" }),
     });
 
-    const alpha = await registry.forProject("alpha");
-    const beta = await registry.forProject("beta");
-    assert.notEqual(alpha.github, beta.github);
-    assert.deepEqual(fakeUrls, [
-      "https://github.com/org-a/alpha-repo.git",
-      "https://github.com/org-b/beta-repo.git",
-    ]);
+    const first = await registry.forProject("alpha");
+    const second = await registry.forProject("alpha");
+    assert.equal(first.github, second.github);
 
-    // Selective invalidation leaves beta cached and rebuilds alpha.
-    registry.invalidateBySlugs(["alpha"]);
-    const alpha2 = await registry.forProject("alpha");
-    const beta2 = await registry.forProject("beta");
-    assert.notEqual(alpha2.github, alpha.github);
-    assert.equal(beta2.github, beta.github);
+    registry.invalidateProject(PROJECTS.alpha!.id);
+    const third = await registry.forProject("alpha");
+    assert.notEqual(second.github, third.github);
+
+    const conn = await registry.testGitHubConnection({ owner: "org-a", repo: "alpha-repo", token: "ghp_probe" });
+    assert.equal(conn.ok, true);
   });
 });

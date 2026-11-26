@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 import { createRootRouteWithContext, HeadContent, Link, Outlet, Scripts, useRouterState } from "@tanstack/react-router";
-import { FolderGit2, KanbanSquare, Settings as SettingsIcon } from "lucide-react";
+import { Archive, ChevronRight, FolderGit2, KanbanSquare, Plus, Settings as SettingsIcon } from "lucide-react";
 import type { ProjectSummary } from "@sdlc-ai/shared";
 import type { ApiClient } from "~/lib/api";
 import { AppHeader } from "~/components/AppHeader";
@@ -29,17 +29,17 @@ export const Route = createRootRouteWithContext<RouterContext>()({
 function useActiveProject(projects: readonly ProjectSummary[]): { activeProject: ProjectSummary | null; onSettings: boolean; onTask: boolean; onBoard: boolean } {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const match = pathname.match(/^\/projects\/([^/]+)(\/settings)?\/?$/);
-  const urlSlug = match?.[1] ? decodeURIComponent(match[1]) : null;
-  const onSettings = Boolean(match?.[2]);
+  const rawSlug = match?.[1] ? decodeURIComponent(match[1]) : null;
+  const urlSlug = rawSlug && rawSlug !== "new" ? rawSlug : null;
+  const onSettings = Boolean(urlSlug && match?.[2]);
   const onTask = pathname.startsWith("/tasks/");
   const onBoard = Boolean(urlSlug && !onSettings);
 
   const savedSlug = typeof window !== "undefined" ? window.localStorage.getItem(LAST_PROJECT_STORAGE_KEY) : null;
   const activeProject =
     (urlSlug ? projects.find((p) => p.slug === urlSlug) : undefined) ??
-    (savedSlug ? projects.find((p) => p.slug === savedSlug && p.active) : undefined) ??
-    projects.find((p) => p.active) ??
-    projects[0] ??
+    (savedSlug ? projects.find((p) => p.slug === savedSlug && p.archivedAt === null) : undefined) ??
+    projects.find((p) => p.archivedAt === null) ??
     null;
 
   return { activeProject, onSettings, onTask, onBoard };
@@ -78,6 +78,9 @@ function Sidebar({
   onTask: boolean;
   onBoard: boolean;
 }) {
+  const activeProjects = projects.filter((p) => p.archivedAt === null);
+  const archivedProjects = projects.filter((p) => p.archivedAt !== null);
+
   return (
     <aside className="hidden w-60 shrink-0 flex-col border-r border-border bg-card md:flex">
       <div className="flex items-center gap-2 border-b border-border px-4 py-3.5">
@@ -91,12 +94,20 @@ function Sidebar({
       </div>
       <nav className="flex flex-col gap-4 overflow-auto px-3 py-4 text-[13px]">
         <div>
-          <p className="px-2 pb-1.5 text-[11px] font-medium text-muted-foreground">Projects</p>
-          {projects.length === 0 ? (
-            <p className="px-2 py-1 text-xs text-muted-foreground">No projects</p>
+          <div className="flex items-center justify-between px-2 pb-1.5">
+            <p className="text-[11px] font-medium text-muted-foreground">Projects</p>
+            <Link
+              to="/projects/new"
+              className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            >
+              <Plus className="h-3 w-3" aria-hidden /> New
+            </Link>
+          </div>
+          {activeProjects.length === 0 ? (
+            <p className="px-2 py-1 text-xs text-muted-foreground">No active projects</p>
           ) : (
             <div className="flex flex-col gap-0.5">
-              {projects.map((p) => {
+              {activeProjects.map((p) => {
                 const isCurrent = activeProject?.id === p.id;
                 return (
                   <Link
@@ -106,7 +117,6 @@ function Sidebar({
                     className={cn(
                       "flex items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 transition-colors hover:bg-secondary/70",
                       isCurrent ? "bg-secondary font-medium text-foreground" : "text-muted-foreground hover:text-foreground",
-                      !p.active && "opacity-60",
                     )}
                   >
                     <span className="flex min-w-0 items-center gap-2">
@@ -114,7 +124,6 @@ function Sidebar({
                       <span className="truncate">{p.name}</span>
                     </span>
                     <span className="flex shrink-0 items-center gap-1.5">
-                      {!p.configOk && <span title="Config missing or invalid" className="h-2 w-2 rounded-full bg-amber-500" />}
                       <span className="rounded bg-background/80 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
                         {p.activeTaskCount}/{p.maxConcurrentTasks}
                       </span>
@@ -123,6 +132,36 @@ function Sidebar({
                 );
               })}
             </div>
+          )}
+          {archivedProjects.length > 0 && (
+            <details className="group mt-2">
+              <summary className="flex cursor-pointer list-none items-center gap-1 px-2 py-1 text-[11px] font-medium text-muted-foreground hover:text-foreground">
+                <ChevronRight className="h-3 w-3 transition-transform group-open:rotate-90" aria-hidden />
+                <Archive className="h-3 w-3" aria-hidden />
+                <span>Archived ({archivedProjects.length})</span>
+              </summary>
+              <div className="mt-0.5 flex flex-col gap-0.5">
+                {archivedProjects.map((p) => {
+                  const isCurrent = activeProject?.id === p.id;
+                  return (
+                    <Link
+                      key={p.id}
+                      to={onSettings ? "/projects/$slug/settings" : "/projects/$slug"}
+                      params={{ slug: p.slug }}
+                      className={cn(
+                        "flex items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 opacity-65 transition-colors hover:bg-secondary/70 hover:opacity-100",
+                        isCurrent ? "bg-secondary font-medium text-foreground opacity-100" : "text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      <span className="flex min-w-0 items-center gap-2">
+                        <FolderGit2 className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                        <span className="truncate">{p.name}</span>
+                      </span>
+                    </Link>
+                  );
+                })}
+              </div>
+            </details>
           )}
         </div>
 

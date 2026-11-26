@@ -3,7 +3,6 @@ import { db } from "../db/index.js";
 import { questions, type QuestionRow, type TaskRow } from "../db/schema.js";
 import { AgentOutputError } from "../errors.js";
 import { bus } from "../events/bus.js";
-import { getProjectConfigHash, loadManifestForSlug } from "../integrations/config-loader.js";
 import { TIMEOUTS } from "../pipeline/deps.js";
 import { answeredQuestion, getAgentRun, getTask, setStatus, updateTask } from "../pipeline/tasks.js";
 import { extractJsonBlock } from "../sandbox/opencode.js";
@@ -18,9 +17,9 @@ const REASK_PROMPT =
 export const plannerBody: AgentBody = async (ctx) => {
   const { github, sandbox, log, task, project } = ctx;
 
-  const manifest = await loadManifestForSlug(project.slug);
-  const configHash = task.configHash ?? getProjectConfigHash(project.slug);
-  if ((project as { reuseSandbox?: boolean }).reuseSandbox) {
+  const manifest = task.manifestSnapshot ?? project.manifest;
+  const configHash = task.configHash ?? project.configHash;
+  if (project.reuseSandbox) {
     await prepareWorkspaceReuse(sandbox, github, { ref: project.defaultBranch, manifest, agents: ["PLANNER"], log, configHash });
   } else {
     await prepareWorkspace(sandbox, github, { ref: project.defaultBranch, manifest, agents: ["PLANNER"], log, configHash });

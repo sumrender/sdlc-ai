@@ -1,9 +1,15 @@
+import { createHash } from "node:crypto";
 import type { Agent, ProjectManifest } from "@sdlc-ai/shared";
 import { fullSetup, redactSecrets } from "@sdlc-ai/shared";
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
 import { AgentOutputError, SandboxError, TimeoutError, WorkspaceError } from "../errors.js";
-import { computeSetupHash } from "../integrations/config-loader.js";
 import { TIMEOUTS } from "../pipeline/deps.js";
+
+export function computeSetupHash(manifest: ProjectManifest, configHash?: string | null, imageStamp?: string | null): string {
+  return createHash("sha256")
+    .update(`${configHash ?? "repo"}:${JSON.stringify(fullSetup(manifest))}:${imageStamp ?? "unknown"}`)
+    .digest("hex");
+}
 import { tail } from "../pipeline/tasks.js";
 import type { GitHubService, Sandbox } from "../ports.js";
 import { WORKSPACE } from "./docker.js";

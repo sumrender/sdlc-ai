@@ -3,7 +3,6 @@ import { e2eSpecDir, type E2eConfig } from "@sdlc-ai/shared";
 import { db } from "../db/index.js";
 import { tasks, type TaskRow } from "../db/schema.js";
 import { bus } from "../events/bus.js";
-import { loadManifestForTask } from "../integrations/config-loader.js";
 import type { Deps } from "./deps.js";
 
 export interface CoverageResult {
@@ -63,7 +62,7 @@ export async function ensureCoverage(deps: Deps, task: TaskRow, llmCheck: LlmCov
     };
   }
   const { project, github } = await deps.forProject(task.projectId);
-  const manifest = await loadManifestForTask(project.slug, task);
+  const manifest = task.manifestSnapshot ?? project.manifest;
   if (!manifest.e2e) {
     return { covered: true, rationale: "No e2e suite configured in the manifest; coverage not required." };
   }

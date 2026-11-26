@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ProjectManifestSchema } from "./manifest";
 
 export const STAGES = [
   "TODO",
@@ -134,7 +135,46 @@ export const ReviewOutputSchema = z.object({
 });
 export type ReviewOutput = z.infer<typeof ReviewOutputSchema>;
 
+export const RenderProviderConfigSchema = z.object({
+  serviceId: z.string().min(1),
+  origin: z.string().min(1).nullable().default(null),
+});
+export type RenderProviderConfig = z.infer<typeof RenderProviderConfigSchema>;
+
+export const CloudflareProviderConfigSchema = z.object({
+  workerName: z.string().min(1),
+  origin: z.string().min(1).nullable().default(null),
+});
+export type CloudflareProviderConfig = z.infer<typeof CloudflareProviderConfigSchema>;
+
+export const DeployProvidersConfigSchema = z.object({
+  render: RenderProviderConfigSchema.optional(),
+  cloudflare: CloudflareProviderConfigSchema.optional(),
+});
+export type DeployProvidersConfig = z.infer<typeof DeployProvidersConfigSchema>;
+
+export const ModelsSchema = z.object({
+  developer: z.string().min(1),
+  fast: z.string().min(1),
+});
+export type Models = z.infer<typeof ModelsSchema>;
+
+export const SecretNameSchema = z
+  .string()
+  .regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/, "Secret name must start with a letter or _ and contain only letters, digits, or _");
+export type SecretName = z.infer<typeof SecretNameSchema>;
+
 const iso = z.string();
+
+export const SecretMetaSchema = z.object({
+  name: z.string(),
+  hint: z.string(),
+  updatedAt: iso,
+});
+export type SecretMeta = z.infer<typeof SecretMetaSchema>;
+
+export const SecretsWriteMapSchema = z.record(SecretNameSchema, z.string());
+export type SecretsWriteMap = z.infer<typeof SecretsWriteMapSchema>;
 
 export const ProjectSchema = z.object({
   id: z.string(),
@@ -143,11 +183,17 @@ export const ProjectSchema = z.object({
   owner: z.string(),
   repo: z.string(),
   defaultBranch: z.string(),
+  manifest: ProjectManifestSchema,
   deployTargets: z.array(DeployTargetConfigSchema),
+  deployProviders: DeployProvidersConfigSchema.default({}),
+  models: ModelsSchema.nullable().default(null),
+  sandboxImage: z.string().nullable().default(null),
+  configHash: z.string(),
   maxConcurrentTasks: MaxConcurrentTasksSchema.default(DEFAULT_MAX_CONCURRENT_TASKS),
   reuseSandbox: z.boolean().default(true),
-  active: z.boolean().default(true),
+  archivedAt: iso.nullable().default(null),
   createdAt: iso,
+  updatedAt: iso,
 });
 export type Project = z.infer<typeof ProjectSchema>;
 
@@ -158,11 +204,10 @@ export const ProjectSummarySchema = z.object({
   owner: z.string(),
   repo: z.string(),
   defaultBranch: z.string(),
-  active: z.boolean(),
+  archivedAt: iso.nullable(),
   activeTaskCount: z.number().int(),
   maxConcurrentTasks: MaxConcurrentTasksSchema,
-  configOk: z.boolean(),
-  configHash: z.string().nullable(),
+  configHash: z.string(),
 });
 export type ProjectSummary = z.infer<typeof ProjectSummarySchema>;
 export const ProjectSummaryListSchema = z.array(ProjectSummarySchema);

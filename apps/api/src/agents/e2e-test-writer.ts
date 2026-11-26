@@ -4,7 +4,6 @@ import { db } from "../db/index.js";
 import { tasks } from "../db/schema.js";
 import { AgentOutputError } from "../errors.js";
 import { bus } from "../events/bus.js";
-import { getProjectConfigHash, loadManifestForSlug } from "../integrations/config-loader.js";
 import { TIMEOUTS } from "../pipeline/deps.js";
 import { tail } from "../pipeline/tasks.js";
 import { WORKSPACE } from "../sandbox/docker.js";
@@ -20,13 +19,13 @@ export const e2eTestWriterBody: AgentBody = async (ctx) => {
   const branch = task.branchName;
   if (!branch) throw new AgentOutputError("Task has no branch name");
 
-  const manifest = await loadManifestForSlug(project.slug);
+  const manifest = task.manifestSnapshot ?? project.manifest;
   if (!manifest.e2e) {
     log("No e2e suite configured in the manifest; skipping spec writer");
     return;
   }
-  const configHash = task.configHash ?? getProjectConfigHash(project.slug);
-  if ((project as { reuseSandbox?: boolean }).reuseSandbox) {
+  const configHash = task.configHash ?? project.configHash;
+  if (project.reuseSandbox) {
     await prepareWorkspaceReuse(sandbox, github, { ref: branch, manifest, agents: ["E2E_TEST_WRITER"], log, configHash });
   } else {
     await prepareWorkspace(sandbox, github, { ref: branch, manifest, agents: ["E2E_TEST_WRITER"], log, configHash });

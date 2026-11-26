@@ -21,13 +21,12 @@ const flag = () => z.preprocess((v) => v === "true" || v === "1", z.boolean());
 const EnvSchema = z.object({
   PORT: z.preprocess(blankToUndefined, z.coerce.number().int().default(4000)),
   DATABASE_URL: z.string().min(1),
-  GITHUB_TOKEN: optional(),
+  // Master 32-byte key (64 hex chars or base64) used to AES-256-GCM encrypt per-project secrets in Postgres.
+  SECRETS_ENCRYPTION_KEY: optional(),
+  SECRETS_ENCRYPTION_KEY_PREVIOUS: optional(),
   OPENCODE_API_KEY: optional(),
   MODEL_DEVELOPER: withDefault("muse-spark-1.3-contributor-free"),
   MODEL_FAST: withDefault("muse-spark-1.3-contributor-free"),
-  RENDER_API_KEY: optional(),
-  CF_API_TOKEN: optional(),
-  CF_ACCOUNT_ID: optional(),
   CONTROL_PLANE_URL: withDefault("http://localhost:3000"),
   SANDBOX_IMAGE: withDefault("sdlc-ai-sandbox:local"),
   DOCKER_BIN: withDefault("docker"),
@@ -35,8 +34,6 @@ const EnvSchema = z.object({
   MAX_GLOBAL_CONCURRENT_TASKS: z.preprocess(blankToUndefined, z.coerce.number().int().min(1).max(50).default(4)),
   // Replaces Docker, GitHub and deploy providers with scripted in-memory fakes.
   SDLC_FAKES: flag(),
-  // Optional override for the local config path (defaults to <repo-root>/sdlc.config.ts).
-  SDLC_CONFIG_PATH: optional(),
   // Set to false to leave seeded Tasks untouched on boot (frontend work against seed data).
   SDLC_RESUME_ON_START: z.preprocess((v) => v !== "false" && v !== "0", z.boolean()),
 });

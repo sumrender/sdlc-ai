@@ -1,8 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { CreateProjectInputRaw, ProjectSettings, TestConnectionInput, UpdateProjectInputRaw, UpsertSecretInput } from "@sdlc-ai/shared";
 import { useApi } from "./api-context";
 
 export const projectsQueryKey = ["projects"] as const;
 export const projectSettingsQueryKey = (projectId: string) => ["project-settings", projectId] as const;
+
+function cacheProjectSettings(queryClient: ReturnType<typeof useQueryClient>, settings: ProjectSettings, previousKey?: string) {
+  if (previousKey) queryClient.setQueryData(projectSettingsQueryKey(previousKey), settings);
+  queryClient.setQueryData(projectSettingsQueryKey(settings.project.id), settings);
+  queryClient.setQueryData(projectSettingsQueryKey(settings.project.slug), settings);
+}
 
 export function useProjectsQuery() {
   const { client } = useApi();
@@ -19,6 +26,107 @@ export function useProjectSettings(projectId: string | undefined) {
   });
 }
 
+/** POST /projects/test-connection: verify GitHub repo access before saving. */
+export function useTestProjectConnection() {
+  const { client } = useApi();
+  return useMutation({
+    mutationFn: (input: TestConnectionInput) => client.testProjectConnection(input),
+  });
+}
+
+/** POST /projects: create a new DB-backed Project. */
+export function useCreateProject() {
+  const { client } = useApi();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateProjectInputRaw) => client.createProject(input),
+    onSuccess: (settings) => {
+      cacheProjectSettings(queryClient, settings);
+      void queryClient.invalidateQueries({ queryKey: projectsQueryKey });
+    },
+  });
+}
+
+/** PATCH /projects/:projectId: update repository, manifest, deploy targets, providers, models, runtime, or secrets. */
+export function useUpdateProject(projectId: string) {
+  const { client } = useApi();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: UpdateProjectInputRaw) => client.updateProject(projectId, input),
+    onSuccess: (settings) => {
+      cacheProjectSettings(queryClient, settings, projectId);
+      void queryClient.invalidateQueries({ queryKey: projectsQueryKey });
+    },
+  });
+}
+
+/** POST /projects/:projectId/archive */
+export function useArchiveProject(projectId: string) {
+  const { client } = useApi();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => client.archiveProject(projectId),
+    onSuccess: (settings) => {
+      cacheProjectSettings(queryClient, settings, projectId);
+      void queryClient.invalidateQueries({ queryKey: projectsQueryKey });
+    },
+  });
+}
+
+/** POST /projects/:projectId/restore */
+export function useRestoreProject(projectId: string) {
+  const { client } = useApi();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => client.restoreProject(projectId),
+    onSuccess: (settings) => {
+      cacheProjectSettings(queryClient, settings, projectId);
+      void queryClient.invalidateQueries({ queryKey: projectsQueryKey });
+    },
+  });
+}
+
+/** DELETE /projects/:projectId: permanently delete a project and its tasks. */
+export function useDeleteProject(projectId: string) {
+  const { client } = useApi();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => client.deleteProject(projectId),
+    onSuccess: () => {
+      queryClient.removeQueries({ queryKey: projectSettingsQueryKey(projectId) });
+      void queryClient.invalidateQueries({ queryKey: projectsQueryKey });
+      void queryClient.invalidateQueries({ queryKey: ["project-settings"] });
+    },
+  });
+}
+
+/** PUT /projects/:projectId/secrets/:name */
+export function useUpsertProjectSecret(projectId: string) {
+  const { client } = useApi();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, input }: { name: string; input: UpsertSecretInput }) =>
+      client.upsertProjectSecret(projectId, name, input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: projectSettingsQueryKey(projectId) });
+      void queryClient.invalidateQueries({ queryKey: ["project-settings"] });
+    },
+  });
+}
+
+/** DELETE /projects/:projectId/secrets/:name */
+export function useDeleteProjectSecret(projectId: string) {
+  const { client } = useApi();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => client.deleteProjectSecret(projectId, name),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: projectSettingsQueryKey(projectId) });
+      void queryClient.invalidateQueries({ queryKey: ["project-settings"] });
+    },
+  });
+}
+
 /** PATCH /projects/:projectId/settings: change the max concurrent Tasks limit. */
 export function useUpdateMaxConcurrentTasks(projectId: string) {
   const { client } = useApi();
@@ -26,9 +134,7 @@ export function useUpdateMaxConcurrentTasks(projectId: string) {
   return useMutation({
     mutationFn: (limit: number) => client.updateMaxConcurrentTasks(projectId, limit),
     onSuccess: (settings) => {
-      queryClient.setQueryData(projectSettingsQueryKey(projectId), settings);
-      queryClient.setQueryData(projectSettingsQueryKey(settings.project.id), settings);
-      queryClient.setQueryData(projectSettingsQueryKey(settings.project.slug), settings);
+      cacheProjectSettings(queryClient, settings, projectId);
       void queryClient.invalidateQueries({ queryKey: projectsQueryKey });
     },
   });
@@ -41,22 +147,7 @@ export function useUpdateReuseSandbox(projectId: string) {
   return useMutation({
     mutationFn: (reuse: boolean) => client.updateReuseSandbox(projectId, reuse),
     onSuccess: (settings) => {
-      queryClient.setQueryData(projectSettingsQueryKey(projectId), settings);
-      queryClient.setQueryData(projectSettingsQueryKey(settings.project.id), settings);
-      queryClient.setQueryData(projectSettingsQueryKey(settings.project.slug), settings);
-    },
-  });
-}
-
-/** POST /projects/reload: re-import sdlc.config.ts, sync DB projects, and clear warm containers for changed slugs. */
-export function useReloadProjectsConfig() {
-  const { client } = useApi();
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: () => client.reloadProjectsConfig(),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: projectsQueryKey });
-      void queryClient.invalidateQueries({ queryKey: ["project-settings"] });
+      cacheProjectSettings(queryClient, settings, projectId);
     },
   });
 }

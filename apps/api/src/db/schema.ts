@@ -15,8 +15,11 @@ import {
   STAGES,
   TASK_STATUSES,
   VERDICTS,
+  type DeployProvidersConfig,
   type DeployTargetConfig,
   type Finding,
+  type Models,
+  type ProjectManifest,
 } from "@sdlc-ai/shared";
 
 export const stageEnum = pgEnum("stage", STAGES);
@@ -43,12 +46,32 @@ export const projects = pgTable("projects", {
   owner: text("owner").notNull(),
   repo: text("repo").notNull(),
   defaultBranch: text("default_branch").notNull().default("main"),
+  manifest: jsonb("manifest").$type<ProjectManifest>().notNull(),
   deployTargets: jsonb("deploy_targets").$type<DeployTargetConfig[]>().notNull().default([]),
+  deployProviders: jsonb("deploy_providers").$type<DeployProvidersConfig>().notNull().default({}),
+  models: jsonb("models").$type<Models | null>(),
+  sandboxImage: text("sandbox_image"),
+  configHash: text("config_hash").notNull(),
   maxConcurrentTasks: integer("max_concurrent_tasks").notNull().default(3),
   reuseSandbox: boolean("reuse_sandbox").notNull().default(true),
-  active: boolean("active").notNull().default(true),
+  archivedAt: ts("archived_at"),
   createdAt: ts("created_at").notNull().defaultNow(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
 });
+
+export const projectSecrets = pgTable(
+  "project_secrets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    ciphertext: text("ciphertext").notNull(),
+    hint: text("hint").notNull(),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("project_secrets_project_name_key").on(t.projectId, t.name)],
+);
 
 // One owner per PR / branch within a Project: composite partial unique indexes
 // (NULLs never conflict). Scoping by projectId lets two Projects track PR #12
@@ -74,8 +97,9 @@ export const tasks = pgTable("tasks", {
   e2eReportVideoUrl: text("e2e_report_video_url"),
   pendingFeedback: text("pending_feedback"),
   error: text("error"),
-  // Config rev (sha256) active when the task started. Null = unstamped (legacy).
+  // Config rev (sha256) and manifest snapshot active when the task started.
   configHash: text("config_hash"),
+  manifestSnapshot: jsonb("manifest_snapshot").$type<ProjectManifest | null>(),
   stageEnteredAt: ts("stage_entered_at").notNull().defaultNow(),
   createdAt: ts("created_at").notNull().defaultNow(),
   updatedAt: ts("updated_at").notNull().defaultNow(),
@@ -197,6 +221,7 @@ export const events = pgTable("events", {
 });
 
 export type ProjectRow = typeof projects.$inferSelect;
+export type ProjectSecretRow = typeof projectSecrets.$inferSelect;
 export type TaskRow = typeof tasks.$inferSelect;
 export type AgentRunRow = typeof agentRuns.$inferSelect;
 export type TestRunRow = typeof testRuns.$inferSelect;

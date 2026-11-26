@@ -7,7 +7,7 @@ A multi-project control plane: a human hands a software task for a configured Pr
 ### Work
 
 **Project**:
-A configured target repository (`slug`, GitHub owner/repo, default branch, manifest, and deploy targets) managed by the control plane. One control-plane instance operates across multiple Projects defined in `sdlc.config.ts`.
+A configured target repository (`slug`, GitHub owner/repo, default branch, manifest, deploy targets, and lifecycle `archivedAt`) managed by the control plane. One control-plane instance operates across multiple Projects stored in PostgreSQL and managed via the UI.
 _Avoid_: repo (when meaning the Project), workspace
 
 **Task**:
@@ -65,8 +65,8 @@ One deterministic execution of the Project Manifest's end-to-end test command in
 _Avoid_: E2E run (E2E is the Stage), test job
 
 **Project Manifest**:
-The Project's own declaration, versioned in its repository, of how a Workspace is prepared (setup commands), how a change is verified before commit (Checks), and how end-to-end tests run. The control plane reads it; it never hardcodes a repository's tooling. Project behavior lives in `sdlc.config.ts` (shown as `rev <hash>` in Settings); secrets and infrastructure stay in `.env`.
-_Avoid_: config, settings (Settings is the control-plane screen that *displays* the Manifest), recipe
+The Project's own declaration of how a Workspace is prepared (setup commands), how a change is verified before commit (Checks), and how end-to-end tests run. The control plane stores it in PostgreSQL (edited in Settings and hashed as `rev <hash>`) and snapshots it onto each Task at Start; host infrastructure stays in `.env` while per-project credentials live encrypted in `project_secrets`.
+_Avoid_: config, settings (Settings is the control-plane screen that manages the Project and its Manifest), recipe
 
 **Check**:
 One deterministic command from the Project Manifest (build, lint, unit tests) run in the Workspace after the Developer finishes and before anything is committed. A failing Check is handed back to the Developer for one fix iteration.

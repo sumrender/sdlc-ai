@@ -1,17 +1,21 @@
 import {
+  CreateProjectInputSchema,
   DEFAULT_MAX_CONCURRENT_TASKS,
   DEMO_TASK,
-  buildProjectRow,
-  defineProjects,
+  ProjectManifestSchema,
+  SecretNameSchema,
+  UpdateProjectInputSchema,
+  UpsertSecretInputSchema,
   deployOverlapWarnings,
   findBlockingTasks,
   hashManifest,
-  toProjectManifest,
+  resolveDeployTargetUrls,
+  slugifyProject,
   MAX_CONCURRENT_TASKS_ERROR_CODE,
+  REVIEWERS,
   retryAvailability,
   sendBackAvailability,
   stopAvailability,
-  REVIEWERS,
   type Agent,
   type AgentRun,
   type AnswerQuestionInput,
@@ -21,6 +25,7 @@ import {
   type CreateTaskInput,
   type DecideApprovalInput,
   type DecideReviewInput,
+  type DeleteProjectResult,
   type DeleteTaskInput,
   type DeleteTaskResult,
   type Deployment,
@@ -28,13 +33,14 @@ import {
   type EventType,
   type Finding,
   type HumanReviewDecision,
+  type Project,
   type ProjectSettings,
   type ProjectSummary,
   type Question,
-  type ReloadProjectsResult,
   type ResetDemoResult,
   type Review,
   type Reviewer,
+  type SecretMeta,
   type SendReviewBackInput,
   type SseMessage,
   type Stage,
@@ -131,14 +137,20 @@ const REVIEW_OUTPUT: Record<Reviewer, { verdict: Verdict; findings: Finding[] }>
   REVIEWER_BACKEND: { verdict: "PASS", findings: [{ severity: "INFO", message: "No backend paths touched in this change", file: "be/Controllers/TemplatesController.cs" }] },
 };
 
-const FIXTURE_CONFIGS = defineProjects([
-  {
-    slug: "meme",
-    name: "Meme Studio",
-    version: 2,
-    repository: { owner: "sumrender", repo: "meme", defaultBranch: "main" },
-    root: { setup: ["npm ci"], checks: ["npm run lint"] },
-    stacks: {
+function formatFixtureSecretHint(value: string): string {
+  return value.length <= 4 ? "****" : `••••${value.slice(-4)}`;
+}
+
+interface FixtureProjectState {
+  project: Project;
+  secrets: Map<string, SecretMeta>;
+}
+
+const FIXTURE_PROJECTS: FixtureProjectState[] = [
+  (() => {
+    const manifest = ProjectManifestSchema.parse({
+      setup: ["npm ci"],
+      checks: ["npm run lint"],
       frontend: {
         dir: "fe",
         paths: ["fe/**"],
@@ -155,31 +167,56 @@ const FIXTURE_CONFIGS = defineProjects([
         unitTests: { command: "dotnet test be/Tests/Backend.Tests.csproj --no-build", cwd: ".", env: {}, optional: true },
         integrations: [{ name: "PostgreSQL 15 + EF Core", notes: "Code-first migrations; connection via be/.env" }],
       },
-    },
-    e2e: {
-      command: "npm run test:e2e",
-      cwd: "fe",
-      testDir: "e2e",
-      env: { CI: "1", BASE_URL: "http://localhost:5173" },
-      artifacts: ["fe/playwright-report", "fe/test-results"],
-      optional: false,
-    },
-    deploy: [
-      { target: "FE", provider: "CLOUDFLARE", pathPrefix: "fe/", url: null },
-      { target: "BE", provider: "RENDER", pathPrefix: "be/", url: null },
-    ],
-    deployProviders: {
+      e2e: {
+        command: "npm run test:e2e",
+        cwd: "fe",
+        testDir: "e2e",
+        env: { CI: "1", BASE_URL: "http://localhost:5173" },
+        artifacts: ["fe/playwright-report", "fe/test-results"],
+        optional: false,
+      },
+    });
+    const deployProviders = {
       cloudflare: { workerName: "meme-fe", origin: "https://meme-fe.stage.example" },
       render: { serviceId: "srv-meme-be", origin: "https://meme-be.stage.example" },
-    },
-  },
-  {
-    slug: "sdlc-ai",
-    name: "SDLC Control Plane",
-    version: 2,
-    repository: { owner: "sumrender", repo: "sdlc-ai", defaultBranch: "main" },
-    root: { setup: ["pnpm install"], checks: ["pnpm -r typecheck"] },
-    stacks: {
+    };
+    const deployTargets = resolveDeployTargetUrls(
+      [
+        { target: "FE", provider: "CLOUDFLARE", pathPrefix: "fe/", url: null },
+        { target: "BE", provider: "RENDER", pathPrefix: "be/", url: null },
+      ],
+      deployProviders,
+    );
+    const createdAt = new Date(Date.now() - 7 * 24 * 60 * 60_000).toISOString();
+    return {
+      project: {
+        id: "fixture-project-meme",
+        slug: "meme",
+        name: "Meme Studio",
+        owner: "sumrender",
+        repo: "meme",
+        defaultBranch: "main",
+        manifest,
+        deployTargets,
+        deployProviders,
+        models: null,
+        sandboxImage: null,
+        configHash: hashManifest(manifest),
+        maxConcurrentTasks: DEFAULT_MAX_CONCURRENT_TASKS,
+        reuseSandbox: true,
+        archivedAt: null,
+        createdAt,
+        updatedAt: createdAt,
+      },
+      secrets: new Map<string, SecretMeta>([
+        ["GITHUB_TOKEN", { name: "GITHUB_TOKEN", hint: "••••demo", updatedAt: createdAt }],
+      ]),
+    };
+  })(),
+  (() => {
+    const manifest = ProjectManifestSchema.parse({
+      setup: ["pnpm install"],
+      checks: ["pnpm -r typecheck"],
       frontend: {
         dir: "apps/web",
         paths: ["apps/web/**"],
@@ -196,68 +233,33 @@ const FIXTURE_CONFIGS = defineProjects([
         unitTests: { command: "pnpm --filter @sdlc-ai/api test", cwd: ".", env: {}, optional: false },
         integrations: [{ name: "PostgreSQL + Drizzle", notes: "Hono API with Drizzle ORM" }],
       },
-    },
-    e2e: null,
-  },
-]);
-
-interface FixtureProjectState {
-  id: string;
-  slug: string;
-  limit: number;
-  reuseSandbox: boolean;
-  baseSettings: ProjectSettings;
-  epoch: number;
-}
-
-const FIXTURE_PROJECTS: FixtureProjectState[] = FIXTURE_CONFIGS.map((config, idx) => {
-  const row = buildProjectRow(config);
-  const manifest = toProjectManifest(config);
-  const hash = hashManifest(manifest);
-  const loadedAt = new Date().toISOString();
-  const id = idx === 0 ? "fixture-project-meme" : `fixture-project-${config.slug}`;
-  return {
-    id,
-    slug: config.slug,
-    limit: DEFAULT_MAX_CONCURRENT_TASKS,
-    reuseSandbox: true,
-    epoch: 1,
-    baseSettings: {
+      e2e: null,
+    });
+    const createdAt = new Date(Date.now() - 6 * 24 * 60 * 60_000).toISOString();
+    return {
       project: {
-        id,
-        ...row,
+        id: "fixture-project-sdlc-ai",
+        slug: "sdlc-ai",
+        name: "SDLC Control Plane",
+        owner: "sumrender",
+        repo: "sdlc-ai",
+        defaultBranch: "main",
+        manifest,
+        deployTargets: [],
+        deployProviders: {},
+        models: null,
+        sandboxImage: null,
+        configHash: hashManifest(manifest),
         maxConcurrentTasks: DEFAULT_MAX_CONCURRENT_TASKS,
         reuseSandbox: true,
-        active: true,
-        createdAt: new Date(Date.now() - (7 - idx) * 24 * 60 * 60_000).toISOString(),
+        archivedAt: null,
+        createdAt,
+        updatedAt: createdAt,
       },
-      github: { ok: true, login: "sdlc-ai[bot]" },
-      manifest: {
-        ok: true,
-        manifest,
-        hash,
-        source: "sdlc.config.ts",
-        loadedAt,
-      },
-      deployWarnings: deployOverlapWarnings(row.deployTargets, manifest),
-      deployProviders: {
-        CLOUDFLARE: Boolean(config.deployProviders.cloudflare),
-        RENDER: Boolean(config.deployProviders.render),
-      },
-      models: { developer: "claude-sonnet-5", fast: "claude-haiku-4-5-20251001" },
-      sandboxImage: "sdlc-ai-sandbox:local",
-      sandboxImageStatus: { ok: true, warning: null },
-      fakes: true,
-      activeTask: null,
-      activeTasks: [],
-      activeTaskCount: 0,
-      maxConcurrentTasks: DEFAULT_MAX_CONCURRENT_TASKS,
-      reuseSandbox: true,
-      globalActiveTaskCount: 0,
-      maxGlobalConcurrentTasks: 4,
-    },
-  };
-});
+      secrets: new Map<string, SecretMeta>(),
+    };
+  })(),
+];
 
 const isReviewer = (agent: Agent): agent is Reviewer => (REVIEWERS as readonly Agent[]).includes(agent);
 
@@ -280,9 +282,12 @@ function makeReview(taskId: string, agentRunId: string, reviewer: Reviewer, verd
 }
 
 export function createFixtureApi(): FixtureApi {
-  const projectStates = FIXTURE_PROJECTS.map((p) => ({ ...p }));
+  let projectStates = FIXTURE_PROJECTS.map((p) => ({
+    project: { ...p.project },
+    secrets: new Map(p.secrets),
+  }));
   const findProject = (idOrSlug: string): FixtureProjectState => {
-    const found = projectStates.find((p) => p.id === idOrSlug || p.slug === idOrSlug);
+    const found = projectStates.find((p) => p.project.id === idOrSlug || p.project.slug === idOrSlug);
     if (!found) throw new ApiRequestError(404, `Project ${idOrSlug} not found`, "NOT_FOUND");
     return found;
   };
@@ -306,7 +311,7 @@ export function createFixtureApi(): FixtureApi {
   };
 
   const emit = (taskId: string, type: EventType, payload: Record<string, unknown>, explicitProjectId?: string) => {
-    const projectId = explicitProjectId ?? tasks.find((t) => t.id === taskId)?.projectId ?? projectStates[0]!.id;
+    const projectId = explicitProjectId ?? tasks.find((t) => t.id === taskId)?.projectId ?? projectStates[0]?.project.id ?? "fixture-project-meme";
     const event: Event = { id: crypto.randomUUID(), taskId, type, payload, createdAt: now() };
     tasks = applyEventToTasks(tasks, event).tasks;
     detailOf(taskId).events.push(event);
@@ -335,7 +340,7 @@ export function createFixtureApi(): FixtureApi {
     const at = now();
     const state = detailOf(taskId);
     const id = ref.agentRunId ?? ref.testRunId ?? "task";
-    const projectId = tasks.find((t) => t.id === taskId)?.projectId ?? projectStates[0]!.id;
+    const projectId = tasks.find((t) => t.id === taskId)?.projectId ?? projectStates[0]?.project.id ?? "fixture-project-meme";
     state.output.set(id, [...(state.output.get(id) ?? []), `${at} ${line}`]);
     broadcast({ kind: "agent_output", projectId, taskId, agentRunId: ref.agentRunId ?? null, testRunId: ref.testRunId ?? null, line, at });
   };
@@ -589,58 +594,230 @@ export function createFixtureApi(): FixtureApi {
     };
   };
 
+  const buildSettings = (state: FixtureProjectState): ProjectSettings => {
+    const p = state.project;
+    const active = tasks.filter((t) => t.projectId === p.id && t.stage !== "TODO" && t.stage !== "STAGING");
+    const globalActive = tasks.filter((t) => t.stage !== "TODO" && t.stage !== "STAGING");
+    const summary = active.map((t) => ({ id: t.id, title: t.title, stage: t.stage }));
+    return {
+      project: p,
+      github: { ok: true, login: "sdlc-ai[bot]" },
+      manifest: {
+        ok: true,
+        manifest: p.manifest,
+        hash: p.configHash ?? hashManifest(p.manifest),
+        source: "database",
+        loadedAt: p.updatedAt,
+      },
+      secrets: [...state.secrets.values()],
+      deployProviders: {
+        CLOUDFLARE: Boolean(p.deployProviders.cloudflare),
+        RENDER: Boolean(p.deployProviders.render),
+      },
+      models: {
+        developer: p.models?.developer ?? "claude-sonnet-5",
+        fast: p.models?.fast ?? "claude-haiku-4-5-20251001",
+      },
+      sandboxImage: p.sandboxImage ?? "sdlc-ai-sandbox:local",
+      sandboxImageStatus: { ok: true, warning: null },
+      fakes: true,
+      activeTask: summary[0] ?? null,
+      activeTasks: summary,
+      activeTaskCount: summary.length,
+      maxConcurrentTasks: p.maxConcurrentTasks,
+      reuseSandbox: p.reuseSandbox,
+      globalActiveTaskCount: globalActive.length,
+      maxGlobalConcurrentTasks: 4,
+      deployWarnings: deployOverlapWarnings(p.deployTargets, p.manifest),
+    };
+  };
+
   const client: ApiClient = {
     listProjects: async (): Promise<ProjectSummary[]> =>
-      projectStates.map((p) => {
-        const activeCount = tasks.filter((t) => t.projectId === p.id && t.stage !== "TODO" && t.stage !== "STAGING").length;
-        const manifest = p.baseSettings.manifest;
-        return {
-          id: p.id,
-          slug: p.slug,
-          name: p.baseSettings.project.name,
-          owner: p.baseSettings.project.owner,
-          repo: p.baseSettings.project.repo,
-          defaultBranch: p.baseSettings.project.defaultBranch,
-          active: true,
-          activeTaskCount: activeCount,
-          maxConcurrentTasks: p.limit,
-          configOk: manifest.ok,
-          configHash: manifest.ok ? (manifest.hash ?? null) : null,
-        };
-      }),
-    reloadProjectsConfig: async (): Promise<ReloadProjectsResult> => ({
-      ok: true,
-      source: "sdlc.config.ts",
-      loadedAt: now(),
-      projects: projectStates.map((p) => ({
-        slug: p.slug,
-        hash: p.baseSettings.manifest.ok ? (p.baseSettings.manifest.hash ?? "") : "",
-        epoch: p.epoch,
-      })),
-      changedSlugs: [],
-    }),
+      [...projectStates]
+        .sort((a, b) => Number(a.project.archivedAt !== null) - Number(b.project.archivedAt !== null))
+        .map((state) => {
+          const p = state.project;
+          const activeCount = tasks.filter((t) => t.projectId === p.id && t.stage !== "TODO" && t.stage !== "STAGING").length;
+          return {
+            id: p.id,
+            slug: p.slug,
+            name: p.name,
+            owner: p.owner,
+            repo: p.repo,
+            defaultBranch: p.defaultBranch,
+            archivedAt: p.archivedAt,
+            activeTaskCount: activeCount,
+            maxConcurrentTasks: p.maxConcurrentTasks,
+            configHash: p.configHash,
+          };
+        }),
+    testProjectConnection: async (input) => {
+      if (!input.owner.trim() || !input.repo.trim()) {
+        return { ok: false, error: "owner and repo are required" };
+      }
+      return { ok: true, login: "sdlc-ai[bot]" };
+    },
+    createProject: async (rawInput) => {
+      const parsed = CreateProjectInputSchema.safeParse(rawInput);
+      if (!parsed.success) {
+        throw new ApiRequestError(400, parsed.error.issues[0]?.message ?? "Invalid project payload", "BAD_REQUEST");
+      }
+      const input = parsed.data;
+      const slug = input.slug ?? slugifyProject(input.repository.repo);
+      if (projectStates.some((p) => p.project.slug === slug)) {
+        throw new ApiRequestError(409, `Project slug "${slug}" already exists`, "CONFLICT");
+      }
+      const createdAt = now();
+      const deployProviders = input.deployProviders ?? {};
+      const deployTargets = resolveDeployTargetUrls(input.deployTargets ?? [], deployProviders);
+      const manifest = input.manifest;
+      const secrets = new Map<string, SecretMeta>();
+      for (const [k, v] of Object.entries(input.secrets ?? {})) {
+        if (typeof v === "string" && v.length > 0) {
+          secrets.set(k, { name: k, hint: formatFixtureSecretHint(v), updatedAt: createdAt });
+        }
+      }
+      const project: Project = {
+        id: crypto.randomUUID(),
+        slug,
+        name: input.name ?? `${input.repository.owner}/${input.repository.repo}`,
+        owner: input.repository.owner,
+        repo: input.repository.repo,
+        defaultBranch: input.repository.defaultBranch,
+        manifest,
+        deployTargets,
+        deployProviders,
+        models: input.models ?? null,
+        sandboxImage: input.sandboxImage ?? null,
+        configHash: hashManifest(manifest),
+        maxConcurrentTasks: input.maxConcurrentTasks,
+        reuseSandbox: input.reuseSandbox,
+        archivedAt: null,
+        createdAt,
+        updatedAt: createdAt,
+      };
+      const state: FixtureProjectState = { project, secrets };
+      projectStates.push(state);
+      return buildSettings(state);
+    },
+    updateProject: async (projectId, rawInput) => {
+      const state = findProject(projectId);
+      const parsed = UpdateProjectInputSchema.safeParse(rawInput);
+      if (!parsed.success) {
+        throw new ApiRequestError(400, parsed.error.issues[0]?.message ?? "Invalid project update", "BAD_REQUEST");
+      }
+      const input = parsed.data;
+      const updatedAt = now();
+      const prev = state.project;
+      const deployProviders = input.deployProviders ?? prev.deployProviders;
+      const deployTargets = resolveDeployTargetUrls(input.deployTargets ?? prev.deployTargets, deployProviders);
+      const manifest = input.manifest ?? prev.manifest;
+      state.project = {
+        ...prev,
+        name: input.name ?? prev.name,
+        owner: input.repository?.owner ?? prev.owner,
+        repo: input.repository?.repo ?? prev.repo,
+        defaultBranch: input.repository?.defaultBranch ?? prev.defaultBranch,
+        manifest,
+        deployTargets,
+        deployProviders,
+        models: input.models !== undefined ? input.models : prev.models,
+        sandboxImage: input.sandboxImage !== undefined ? input.sandboxImage : prev.sandboxImage,
+        configHash: hashManifest(manifest),
+        maxConcurrentTasks: input.maxConcurrentTasks ?? prev.maxConcurrentTasks,
+        reuseSandbox: input.reuseSandbox ?? prev.reuseSandbox,
+        updatedAt,
+      };
+      for (const [k, v] of Object.entries(input.secrets ?? {})) {
+        const trimmed = v.trim();
+        if (!trimmed) continue;
+        state.secrets.set(k, { name: k, hint: formatFixtureSecretHint(trimmed), updatedAt });
+      }
+      return buildSettings(state);
+    },
+    archiveProject: async (projectId) => {
+      const state = findProject(projectId);
+      const running = tasks.filter((t) => t.projectId === state.project.id && t.status === "RUNNING");
+      if (running.length > 0) {
+        throw new ApiRequestError(409, "Stop running Tasks before archiving this Project", "PROJECT_HAS_RUNNING_TASKS");
+      }
+      const archivedAt = now();
+      state.project = { ...state.project, archivedAt, updatedAt: archivedAt };
+      return buildSettings(state);
+    },
+    restoreProject: async (projectId) => {
+      const state = findProject(projectId);
+      state.project = { ...state.project, archivedAt: null, updatedAt: now() };
+      return buildSettings(state);
+    },
+    deleteProject: async (projectId): Promise<DeleteProjectResult> => {
+      const state = findProject(projectId);
+      const running = tasks.filter((t) => t.projectId === state.project.id && t.status === "RUNNING");
+      if (running.length > 0) {
+        throw new ApiRequestError(409, "Stop running Tasks before deleting this Project", "PROJECT_HAS_RUNNING_TASKS");
+      }
+      const owned = tasks.filter((t) => t.projectId === state.project.id);
+      for (const t of owned) details.delete(t.id);
+      tasks = tasks.filter((t) => t.projectId !== state.project.id);
+      projectStates = projectStates.filter((s) => s.project.id !== state.project.id);
+      return {
+        id: state.project.id,
+        slug: state.project.slug,
+        name: state.project.name,
+        tasksDeleted: owned.length,
+      };
+    },
+    upsertProjectSecret: async (projectId, name, input) => {
+      const state = findProject(projectId);
+      const validName = SecretNameSchema.safeParse(name);
+      if (!validName.success) {
+        throw new ApiRequestError(400, validName.error.issues[0]?.message ?? "Invalid secret name", "BAD_REQUEST");
+      }
+      const parsed = UpsertSecretInputSchema.safeParse(input);
+      if (!parsed.success) {
+        throw new ApiRequestError(400, parsed.error.issues[0]?.message ?? "Invalid secret value", "BAD_REQUEST");
+      }
+      const meta: SecretMeta = {
+        name: validName.data,
+        hint: formatFixtureSecretHint(parsed.data.value),
+        updatedAt: now(),
+      };
+      state.secrets.set(validName.data, meta);
+      return meta;
+    },
+    deleteProjectSecret: async (projectId, name) => {
+      const state = findProject(projectId);
+      state.secrets.delete(name);
+    },
     listTasks: async (projectId) => {
-      const p = findProject(projectId);
-      return tasks.filter((t) => t.projectId === p.id);
+      const state = findProject(projectId);
+      return tasks.filter((t) => t.projectId === state.project.id);
     },
     createTask: async (input: CreateTaskInput) => {
-      const p = findProject(input.projectId);
-      const task = makeTask({ ...input, projectId: p.id }, {
-        issueUrl: `https://github.com/${p.baseSettings.project.owner}/${p.baseSettings.project.repo}/issues/41`,
+      const state = findProject(input.projectId);
+      if (state.project.archivedAt !== null) {
+        throw new ApiRequestError(409, "Cannot create Tasks on an archived Project. Restore it first.", "PROJECT_ARCHIVED");
+      }
+      const task = makeTask({ ...input, projectId: state.project.id }, {
+        issueUrl: `https://github.com/${state.project.owner}/${state.project.repo}/issues/41`,
       });
-      emit(task.id, "TASK_CREATED", { task }, p.id);
+      emit(task.id, "TASK_CREATED", { task }, state.project.id);
       return task;
     },
     startTask: async (taskId) => {
       const task = find(taskId);
       if (task.stage !== "TODO") throw new ApiRequestError(409, "Only TODO Tasks can be started", "NOT_TODO");
-      const p = findProject(task.projectId);
-      const projectTasks = tasks.filter((t) => t.projectId === p.id);
-      const blockers = findBlockingTasks(projectTasks, taskId, p.limit);
+      const state = findProject(task.projectId);
+      if (state.project.archivedAt !== null) {
+        throw new ApiRequestError(409, "Cannot start Tasks on an archived Project. Restore it first.", "PROJECT_ARCHIVED");
+      }
+      const projectTasks = tasks.filter((t) => t.projectId === state.project.id);
+      const blockers = findBlockingTasks(projectTasks, taskId, state.project.maxConcurrentTasks);
       if (blockers.length > 0)
         throw new ApiRequestError(
           409,
-          `Max task limit reached (${blockers.length} of ${p.limit} active). Increase the limit in Settings to start more tasks.`,
+          `Max task limit reached (${blockers.length} of ${state.project.maxConcurrentTasks} active). Increase the limit in Settings to start more tasks.`,
           MAX_CONCURRENT_TASKS_ERROR_CODE,
         );
       sequence([
@@ -666,15 +843,15 @@ export function createFixtureApi(): FixtureApi {
       return find(taskId);
     },
     runDemo: async (projectId) => {
-      const p = findProject(projectId);
-      const task = await client.createTask({ projectId: p.id, ...DEMO_TASK });
+      const state = findProject(projectId);
+      const task = await client.createTask({ projectId: state.project.id, ...DEMO_TASK });
       return client.startTask(task.id);
     },
     resetDemo: async (projectId): Promise<ResetDemoResult> => {
-      const p = findProject(projectId);
-      const owned = tasks.filter((t) => t.projectId === p.id);
+      const state = findProject(projectId);
+      const owned = tasks.filter((t) => t.projectId === state.project.id);
       for (const t of owned) details.delete(t.id);
-      tasks = tasks.filter((t) => t.projectId !== p.id);
+      tasks = tasks.filter((t) => t.projectId !== state.project.id);
       return { tasksDeleted: owned.length, issuesClosed: owned.length, pullRequestsClosed: 0, branchesDeleted: 0 };
     },
     getTask: async (taskId) => toDetail(taskId),
@@ -808,32 +985,16 @@ export function createFixtureApi(): FixtureApi {
       develop(taskId);
       return toDetail(taskId);
     },
-    getProjectSettings: async (projectId) => {
-      const p = findProject(projectId);
-      const active = tasks.filter((t) => t.projectId === p.id && t.stage !== "TODO" && t.stage !== "STAGING");
-      const globalActive = tasks.filter((t) => t.stage !== "TODO" && t.stage !== "STAGING");
-      const summary = active.map((t) => ({ id: t.id, title: t.title, stage: t.stage }));
-      return {
-        ...p.baseSettings,
-        project: { ...p.baseSettings.project, maxConcurrentTasks: p.limit, reuseSandbox: p.reuseSandbox },
-        activeTask: summary[0] ?? null,
-        activeTasks: summary,
-        activeTaskCount: summary.length,
-        maxConcurrentTasks: p.limit,
-        reuseSandbox: p.reuseSandbox,
-        globalActiveTaskCount: globalActive.length,
-        maxGlobalConcurrentTasks: 4,
-      };
-    },
+    getProjectSettings: async (projectId) => buildSettings(findProject(projectId)),
     updateMaxConcurrentTasks: async (projectId, limit: number) => {
-      const p = findProject(projectId);
-      p.limit = limit;
-      return client.getProjectSettings(p.id);
+      const state = findProject(projectId);
+      state.project = { ...state.project, maxConcurrentTasks: limit, updatedAt: now() };
+      return buildSettings(state);
     },
     updateReuseSandbox: async (projectId, reuse: boolean) => {
-      const p = findProject(projectId);
-      p.reuseSandbox = reuse;
-      return client.getProjectSettings(p.id);
+      const state = findProject(projectId);
+      state.project = { ...state.project, reuseSandbox: reuse, updatedAt: now() };
+      return buildSettings(state);
     },
     fetchArtifactText: async (taskId, artifactId) => {
       const content = detailOf(taskId).logs.get(artifactId);
@@ -973,8 +1134,8 @@ function makeTask(input: CreateTaskInput, overrides: Partial<BoardTask> = {}): B
 }
 
 function seedTasks(): BoardTask[] {
-  const memeId = FIXTURE_PROJECTS[0]!.id;
-  const sdlcId = FIXTURE_PROJECTS[1]!.id;
+  const memeId = FIXTURE_PROJECTS[0]!.project.id;
+  const sdlcId = FIXTURE_PROJECTS[1]!.project.id;
   return [
     makeTask(
       { projectId: memeId, title: "Add dark mode toggle to the settings page", description: "Persist the choice and respect prefers-color-scheme." },

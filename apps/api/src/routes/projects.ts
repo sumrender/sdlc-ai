@@ -1,22 +1,29 @@
 import { Hono } from "hono";
 import {
+  CreateProjectInputSchema,
+  TestConnectionInputSchema,
+  UpdateProjectInputSchema,
   UpdateProjectSettingsInputSchema,
+  UpsertSecretInputSchema,
   deployOverlapWarnings,
+  type Project,
   type ProjectSettings,
   type ProjectSummary,
   type SandboxImageStatus,
 } from "@sdlc-ai/shared";
 import { env } from "../env.js";
-import { HttpError, errorMessage } from "../errors.js";
-import {
-  getLoadedProjectConfig,
-  getProjectConfigHash,
-  getProjectConfigMeta,
-  loadManifestForSlug,
-  reloadLocalProjectsConfig,
-} from "../integrations/config-loader.js";
+import { HttpError } from "../errors.js";
 import type { ProjectRegistry } from "../integrations/project-registry.js";
-import { listProjects, requireProject } from "../pipeline/tasks.js";
+import {
+  archiveProjectRecord,
+  createProjectRecord,
+  deleteProjectRecord,
+  deleteProjectSecretRecord,
+  restoreProjectRecord,
+  updateProjectRecord,
+  upsertProjectSecretRecord,
+} from "../pipeline/projects-service.js";
+import { listProjectSecretsMeta, listProjects, requireProject } from "../pipeline/tasks.js";
 import type { WorkflowService } from "../pipeline/workflow.js";
 import { checkSandboxImage } from "../sandbox/image-stamp.js";
 import { parseBody, readJson } from "./app.js";
@@ -37,37 +44,34 @@ export function projectsRoutes(workflow: WorkflowService, registry: ProjectRegis
       owner: p.owner,
       repo: p.repo,
       defaultBranch: p.defaultBranch,
-      active: p.active,
+      archivedAt: p.archivedAt ? p.archivedAt.toISOString() : null,
       activeTaskCount: counts.get(p.id) ?? 0,
       maxConcurrentTasks: p.maxConcurrentTasks,
-      configOk: Boolean(getLoadedProjectConfig(p.slug)),
-      configHash: getProjectConfigHash(p.slug),
+      configHash: p.configHash,
     }));
     return c.json(summaries);
   });
 
-  // Force a fresh sdlc.config.ts import, sync projects, and drop warm containers
-  // only for projects whose manifest hash changed. Returns 200 with {ok:false}
-  // on failure — never 500, never exits.
-  r.post("/reload", async (c) => {
-    const read = await reloadLocalProjectsConfig();
-    if (!read.ok) return c.json({ ok: false as const, error: read.error }, 200);
-    await registry.syncProjects(read);
-    await workflow.clearWarmSandboxesForSlugs(read.changedSlugs);
-    if (read.changedSlugs.length > 0) {
-      console.log(`[config] reload changed [${read.changedSlugs.join(", ")}]; warm containers cleared for changed projects`);
-    }
-    return c.json({
-      ok: true as const,
-      source: read.source,
-      loadedAt: read.loadedAt,
-      projects: read.list.map((p) => ({ slug: p.slug, hash: p.hash, epoch: p.epoch })),
-      changedSlugs: read.changedSlugs,
-    });
+  r.post("/test-connection", async (c) => {
+    const input = await parseBody(c.req.raw, TestConnectionInputSchema);
+    return c.json(await registry.testGitHubConnection(input));
+  });
+
+  r.post("/", async (c) => {
+    const input = await parseBody(c.req.raw, CreateProjectInputSchema);
+    const created = await createProjectRecord(registry, input);
+    return c.json(await readSettings(workflow, registry, created.id), 201);
   });
 
   r.get("/:projectId", async (c) => {
     return c.json(await readSettings(workflow, registry, c.req.param("projectId")));
+  });
+
+  r.patch("/:projectId", async (c) => {
+    const projectId = c.req.param("projectId");
+    const input = await parseBody(c.req.raw, UpdateProjectInputSchema);
+    const updated = await updateProjectRecord(workflow, registry, projectId, input);
+    return c.json(await readSettings(workflow, registry, updated.id));
   });
 
   r.patch("/:projectId/settings", async (c) => {
@@ -75,12 +79,44 @@ export function projectsRoutes(workflow: WorkflowService, registry: ProjectRegis
     const input = await parseBody(c.req.raw, UpdateProjectSettingsInputSchema);
     if (input.maxConcurrentTasks !== undefined) await workflow.updateMaxConcurrentTasks(projectId, input.maxConcurrentTasks);
     if (input.reuseSandbox !== undefined) await workflow.updateReuseSandbox(projectId, input.reuseSandbox);
+    registry.invalidateProject((await requireProject(projectId)).id);
     return c.json(await readSettings(workflow, registry, projectId));
+  });
+
+  r.post("/:projectId/archive", async (c) => {
+    const archived = await archiveProjectRecord(workflow, registry, c.req.param("projectId"));
+    return c.json(await readSettings(workflow, registry, archived.id));
+  });
+
+  r.post("/:projectId/restore", async (c) => {
+    const restored = await restoreProjectRecord(registry, c.req.param("projectId"));
+    return c.json(await readSettings(workflow, registry, restored.id));
+  });
+
+  r.delete("/:projectId", async (c) => {
+    return c.json(await deleteProjectRecord(workflow, registry, c.req.param("projectId")));
+  });
+
+  r.put("/:projectId/secrets/:name", async (c) => {
+    const input = await parseBody(c.req.raw, UpsertSecretInputSchema);
+    const meta = await upsertProjectSecretRecord(registry, c.req.param("projectId"), c.req.param("name"), input.value);
+    return c.json(meta);
+  });
+
+  r.delete("/:projectId/secrets/:name", async (c) => {
+    await deleteProjectSecretRecord(registry, c.req.param("projectId"), c.req.param("name"));
+    return c.json({ ok: true });
   });
 
   r.get("/:projectId/manifest", async (c) => {
     const project = await requireProject(c.req.param("projectId"));
-    return c.json(await readManifest(project.slug));
+    return c.json({
+      ok: true as const,
+      manifest: project.manifest,
+      hash: project.configHash,
+      source: "database",
+      loadedAt: project.updatedAt.toISOString(),
+    });
   });
 
   r.post("/:projectId/demo/run", async (c) => {
@@ -100,21 +136,45 @@ export function projectsRoutes(workflow: WorkflowService, registry: ProjectRegis
 async function readSettings(workflow: WorkflowService, registry: ProjectRegistry, projectIdOrSlug: string): Promise<ProjectSettings> {
   const runtime = await registry.forProject(projectIdOrSlug);
   const { project } = runtime;
-  const [github, manifest, projectActive, globalActive, sandboxImageStatus] = await Promise.all([
+  const [github, secretsMeta, projectActive, globalActive, sandboxImageStatus] = await Promise.all([
     runtime.github.connectionStatus(),
-    readManifest(project.slug),
+    listProjectSecretsMeta(project.id),
     workflow.activeTasks(project.id),
     workflow.activeTasks(),
-    // Re-read every request (not cached) so the warning clears as soon as the image is rebuilt.
     readSandboxImageStatus(runtime.sandboxImage),
   ]);
   const active = projectActive.map((t) => ({ id: t.id, title: t.title, stage: t.stage }));
-  const deployWarnings = manifest.ok ? deployOverlapWarnings(project.deployTargets, manifest.manifest) : [];
-  for (const w of deployWarnings) console.warn(`[config:${project.slug}] ${w}`);
+  const deployWarnings = deployOverlapWarnings(project.deployTargets, project.manifest);
+  const apiProject: Project = {
+    id: project.id,
+    slug: project.slug,
+    name: project.name,
+    owner: project.owner,
+    repo: project.repo,
+    defaultBranch: project.defaultBranch,
+    manifest: project.manifest,
+    deployTargets: project.deployTargets,
+    deployProviders: project.deployProviders,
+    models: project.models,
+    sandboxImage: project.sandboxImage,
+    configHash: project.configHash,
+    maxConcurrentTasks: project.maxConcurrentTasks,
+    reuseSandbox: project.reuseSandbox,
+    archivedAt: project.archivedAt ? project.archivedAt.toISOString() : null,
+    createdAt: project.createdAt.toISOString(),
+    updatedAt: project.updatedAt.toISOString(),
+  };
   return {
-    project: { ...project, createdAt: project.createdAt.toISOString() },
+    project: apiProject,
     github,
-    manifest,
+    manifest: {
+      ok: true,
+      manifest: project.manifest,
+      hash: project.configHash,
+      source: "database",
+      loadedAt: project.updatedAt.toISOString(),
+    },
+    secrets: secretsMeta,
     deployWarnings,
     deployProviders: {
       CLOUDFLARE: Boolean(runtime.deployProviders.CLOUDFLARE),
@@ -138,13 +198,4 @@ async function readSettings(workflow: WorkflowService, registry: ProjectRegistry
 async function readSandboxImageStatus(image: string): Promise<SandboxImageStatus> {
   if (env.SDLC_FAKES) return { ok: true, warning: null };
   return checkSandboxImage(image, env.DOCKER_BIN);
-}
-
-async function readManifest(slug: string) {
-  try {
-    const manifest = await loadManifestForSlug(slug);
-    return { ok: true as const, manifest, ...getProjectConfigMeta(slug) };
-  } catch (e) {
-    return { ok: false as const, error: errorMessage(e) };
-  }
 }

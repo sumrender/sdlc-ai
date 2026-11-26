@@ -23,7 +23,7 @@ export function NewTaskDialog({
   const { client } = useApi();
   const queryClient = useQueryClient();
   const projectsQuery = useProjectsQuery();
-  const activeProjects = (projectsQuery.data ?? []).filter((p) => p.active);
+  const activeProjects = (projectsQuery.data ?? []).filter((p) => p.archivedAt === null);
   const [projectId, setProjectId] = useState(defaultProjectId ?? "");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");

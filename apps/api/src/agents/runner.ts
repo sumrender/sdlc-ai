@@ -14,6 +14,7 @@ import { TaskSandboxPool } from "../sandbox/task-pool.js";
 export interface RunContext {
   deps: Deps;
   github: GitHubService;
+  secrets: Record<string, string>;
   models: { developer: string; fast: string };
   sandboxImage: string;
   sandbox: Sandbox;
@@ -60,7 +61,7 @@ async function execute(deps: Deps, run: AgentRunRow, body: AgentBody): Promise<v
     if (!task) throw new Error("Task no longer exists");
     taskProjectId = task.projectId;
     const runtime = await deps.forProject(task.projectId);
-    const { project, github, models, sandboxImage } = runtime;
+    const { project, github, secrets, models, sandboxImage } = runtime;
     log(`Starting ${run.agent} (attempt ${run.attempt}, model ${run.model})`);
     const pool = deps.sandboxes instanceof TaskSandboxPool ? deps.sandboxes : null;
     const reuse = Boolean(pool && (project as { reuseSandbox?: boolean }).reuseSandbox);
@@ -72,7 +73,7 @@ async function execute(deps: Deps, run: AgentRunRow, body: AgentBody): Promise<v
       // container's /workspace, and concurrent git fetch/checkout/reset +
       // opencode runs would interleave (mixed diffs, PR comment races).
       await pool.withLock(task.id, () =>
-        body({ deps, github, models, sandboxImage, sandbox: shared, log, run, task, project }),
+        body({ deps, github, secrets, models, sandboxImage, sandbox: shared, log, run, task, project }),
       );
     } else {
       const own = await deps.sandboxes.create({
@@ -87,7 +88,7 @@ async function execute(deps: Deps, run: AgentRunRow, body: AgentBody): Promise<v
       const poolForOwned = deps.sandboxes instanceof TaskSandboxPool ? deps.sandboxes : null;
       const releaseOwned = poolForOwned?.registerOwned(task.id, own) ?? null;
       try {
-        await body({ deps, github, models, sandboxImage, sandbox: own, log, run, task, project });
+        await body({ deps, github, secrets, models, sandboxImage, sandbox: own, log, run, task, project });
       } finally {
         releaseOwned?.();
       }

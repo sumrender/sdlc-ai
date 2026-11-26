@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ProjectsNewRouteImport } from './routes/projects.new'
 import { Route as TasksIdRouteImport } from './routes/tasks.$id'
 import { Route as ProjectsSlugIndexRouteImport } from './routes/projects.$slug.index'
 import { Route as ProjectsSlugSettingsRouteImport } from './routes/projects.$slug.settings'
@@ -17,6 +18,11 @@ import { Route as ProjectsSlugSettingsRouteImport } from './routes/projects.$slu
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ProjectsNewRoute = ProjectsNewRouteImport.update({
+  id: '/projects/new',
+  path: '/projects/new',
   getParentRoute: () => rootRouteImport,
 } as any)
 const TasksIdRoute = TasksIdRouteImport.update({
@@ -37,12 +43,14 @@ const ProjectsSlugSettingsRoute = ProjectsSlugSettingsRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/projects/new': typeof ProjectsNewRoute
   '/tasks/$id': typeof TasksIdRoute
   '/projects/$slug/settings': typeof ProjectsSlugSettingsRoute
   '/projects/$slug/': typeof ProjectsSlugIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/projects/new': typeof ProjectsNewRoute
   '/tasks/$id': typeof TasksIdRoute
   '/projects/$slug/settings': typeof ProjectsSlugSettingsRoute
   '/projects/$slug': typeof ProjectsSlugIndexRoute
@@ -50,6 +58,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/projects/new': typeof ProjectsNewRoute
   '/tasks/$id': typeof TasksIdRoute
   '/projects/$slug/settings': typeof ProjectsSlugSettingsRoute
   '/projects/$slug/': typeof ProjectsSlugIndexRoute
@@ -57,12 +66,22 @@ export interface FileRoutesById {
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/tasks/$id' | '/projects/$slug/settings' | '/projects/$slug/'
+    | '/'
+    | '/projects/new'
+    | '/tasks/$id'
+    | '/projects/$slug/settings'
+    | '/projects/$slug/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/tasks/$id' | '/projects/$slug/settings' | '/projects/$slug'
+  to:
+    | '/'
+    | '/projects/new'
+    | '/tasks/$id'
+    | '/projects/$slug/settings'
+    | '/projects/$slug'
   id:
     | '__root__'
     | '/'
+    | '/projects/new'
     | '/tasks/$id'
     | '/projects/$slug/settings'
     | '/projects/$slug/'
@@ -70,6 +89,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ProjectsNewRoute: typeof ProjectsNewRoute
   TasksIdRoute: typeof TasksIdRoute
   ProjectsSlugSettingsRoute: typeof ProjectsSlugSettingsRoute
   ProjectsSlugIndexRoute: typeof ProjectsSlugIndexRoute
@@ -82,6 +102,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/projects/new': {
+      id: '/projects/new'
+      path: '/projects/new'
+      fullPath: '/projects/new'
+      preLoaderRoute: typeof ProjectsNewRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/tasks/$id': {
@@ -110,6 +137,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ProjectsNewRoute: ProjectsNewRoute,
   TasksIdRoute: TasksIdRoute,
   ProjectsSlugSettingsRoute: ProjectsSlugSettingsRoute,
   ProjectsSlugIndexRoute: ProjectsSlugIndexRoute,

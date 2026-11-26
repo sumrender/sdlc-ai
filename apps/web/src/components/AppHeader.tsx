@@ -23,13 +23,17 @@ export function AppHeader({ nav, activeProject }: { nav?: ReactNode; activeProje
         </span>
         {nav}
         <div className="ml-auto flex items-center gap-2">
-          <Button size="sm" onClick={() => setNewTaskOpen(true)} disabled={!activeProject}>
+          <Button size="sm" onClick={() => setNewTaskOpen(true)} disabled={!activeProject || activeProject.archivedAt !== null}>
             <Plus /> New Task
           </Button>
         </div>
       </div>
 
-      <NewTaskDialog open={newTaskOpen} onOpenChange={setNewTaskOpen} defaultProjectId={activeProject?.id} />
+      <NewTaskDialog
+        open={newTaskOpen}
+        onOpenChange={setNewTaskOpen}
+        defaultProjectId={activeProject && activeProject.archivedAt === null ? activeProject.id : undefined}
+      />
     </header>
   );
 }

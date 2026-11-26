@@ -1,16 +1,20 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { AlertTriangle, CheckCircle2, ExternalLink, RefreshCw, RotateCw, XCircle } from "lucide-react";
-import { MAX_CONCURRENT_TASKS_LIMIT, type EnvValue, type ProjectSettings, type Provider } from "@sdlc-ai/shared";
+import { AlertTriangle, Archive, CheckCircle2, ExternalLink, KeyRound, Pencil, RefreshCw, RotateCcw, Trash2, X, XCircle } from "lucide-react";
+import { MAX_CONCURRENT_TASKS_LIMIT, type EnvValue, type ProjectSettings, type Provider, type UpdateProjectInputRaw } from "@sdlc-ai/shared";
+import { DeleteProjectDialog } from "~/components/DeleteProjectDialog";
+import { ProjectForm } from "~/components/ProjectForm";
 import { Section } from "~/components/Section";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { formatDateTime } from "~/lib/task-detail";
 import {
+  useArchiveProject,
   useProjectSettings,
-  useReloadProjectsConfig,
+  useRestoreProject,
   useUpdateMaxConcurrentTasks,
+  useUpdateProject,
   useUpdateReuseSandbox,
 } from "~/lib/settings-query";
 import { cn } from "~/lib/utils";
@@ -25,9 +29,10 @@ const PROVIDER_LABEL: Record<Provider, string> = { CLOUDFLARE: "Cloudflare", REN
 function ProjectSettingsPage() {
   const { slug } = Route.useParams();
   const query = useProjectSettings(slug);
-  const reload = useReloadProjectsConfig();
+  const [editing, setEditing] = useState(false);
 
   useEffect(() => {
+    setEditing(false);
     if (typeof window !== "undefined") {
       window.localStorage.setItem(LAST_PROJECT_STORAGE_KEY, slug);
     }
@@ -46,30 +51,28 @@ function ProjectSettingsPage() {
           </nav>
           <h1 className="mt-1.5 text-xl font-semibold tracking-tight">Settings</h1>
           <p className="mt-1 max-w-2xl text-[13px] text-muted-foreground">
-            Everything on this page is read from the control plane and the local sdlc.config.ts at request time. Nothing is hardcoded in the UI.
+            Project configuration, manifest, deploy targets, and encrypted secrets stored in PostgreSQL.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => reload.mutate()} disabled={reload.isPending}>
-            <RotateCw className={cn(reload.isPending && "animate-spin")} /> Reload config
-          </Button>
+          {query.data && (
+            <Button variant={editing ? "secondary" : "default"} size="sm" onClick={() => setEditing((v) => !v)}>
+              {editing ? (
+                <>
+                  <X /> Cancel editing
+                </>
+              ) : (
+                <>
+                  <Pencil /> Edit Project
+                </>
+              )}
+            </Button>
+          )}
           <Button variant="outline" size="sm" onClick={() => void query.refetch()} disabled={query.isFetching}>
             <RefreshCw className={cn(query.isFetching && "animate-spin")} /> Re-read
           </Button>
         </div>
       </header>
-
-      {reload.data && !reload.data.ok && (
-        <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-          Config reload failed: {reload.data.error}
-        </div>
-      )}
-      {reload.data && reload.data.ok && (
-        <div role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
-          Reloaded {reload.data.projects.length} project(s) from {reload.data.source}
-          {reload.data.changedSlugs.length > 0 ? ` · updated: ${reload.data.changedSlugs.join(", ")}` : " · no manifest changes"}.
-        </div>
-      )}
 
       {query.isPending && <p className="text-sm text-muted-foreground">Reading Project "{slug}"…</p>}
       {query.isError && (
@@ -77,35 +80,109 @@ function ProjectSettingsPage() {
           Could not read the Project: {query.error.message}
         </p>
       )}
-      {query.data && <SettingsView settings={query.data} />}
+      {query.data && (
+        <SettingsContent
+          key={`${query.data.project.id}:${query.data.project.updatedAt}:${editing ? "edit" : "view"}`}
+          settings={query.data}
+          editing={editing}
+          onDoneEditing={() => setEditing(false)}
+        />
+      )}
     </div>
   );
 }
 
-function SettingsView({ settings }: { settings: ProjectSettings }) {
-  const { project, github, manifest, deployProviders, deployWarnings } = settings;
-  const repoUrl = `https://github.com/${project.owner}/${project.repo}`;
-  const manifestLabel =
-    manifest.ok && manifest.source && manifest.hash && manifest.loadedAt
-      ? `${manifest.source} · rev ${manifest.hash.slice(0, 12)} · ${formatDateTime(manifest.loadedAt)}`
-      : `sdlc.config.ts · not loaded yet`;
+function SettingsContent({
+  settings,
+  editing,
+  onDoneEditing,
+}: {
+  settings: ProjectSettings;
+  editing: boolean;
+  onDoneEditing: () => void;
+}) {
+  const { project } = settings;
+  const updateProject = useUpdateProject(project.id);
+  const archiveProject = useArchiveProject(project.id);
+  const restoreProject = useRestoreProject(project.id);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+
+  const handleUpdate = (input: UpdateProjectInputRaw) => {
+    updateProject.mutate(input, {
+      onSuccess: () => onDoneEditing(),
+    });
+  };
 
   return (
     <>
-      {!manifest.ok && (
-        <div role="alert" className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
-          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" aria-hidden />
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-amber-800">Project config missing or invalid</p>
-            <p className="mt-0.5 text-sm text-amber-800">
-              The control plane cannot prepare a Workspace, run Checks, or run end-to-end tests until{" "}
-              <span className="font-mono text-xs">sdlc.config.ts</span> loads cleanly (edit it, then click Reload config or POST{" "}
-              <span className="font-mono text-xs">/projects/reload</span>).
-            </p>
-            <pre className="mt-2 whitespace-pre-wrap break-words rounded-lg bg-amber-100/60 px-2 py-1.5 font-mono text-xs text-amber-900">{manifest.error}</pre>
+      {project.archivedAt !== null && (
+        <div role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <div className="flex items-start gap-2.5">
+            <Archive className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" aria-hidden />
+            <div>
+              <p className="font-medium">Project archived</p>
+              <p className="text-xs text-amber-800">
+                Archived {formatDateTime(project.archivedAt)}. Task creation and starts are blocked until restored.
+              </p>
+            </div>
           </div>
+          <Button size="sm" variant="outline" onClick={() => restoreProject.mutate()} disabled={restoreProject.isPending}>
+            <RotateCcw /> {restoreProject.isPending ? "Restoring…" : "Restore Project"}
+          </Button>
         </div>
       )}
+      {restoreProject.isError && (
+        <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          Could not restore project: {restoreProject.error.message}
+        </p>
+      )}
+
+      {editing ? (
+        <ProjectForm
+          mode="edit"
+          initial={settings}
+          submitting={updateProject.isPending}
+          submitError={updateProject.isError ? updateProject.error.message : null}
+          onSubmit={handleUpdate}
+          onCancel={onDoneEditing}
+        />
+      ) : (
+        <SettingsView
+          settings={settings}
+          onArchive={() => archiveProject.mutate()}
+          archiving={archiveProject.isPending}
+          archiveError={archiveProject.isError ? archiveProject.error.message : null}
+          onOpenDelete={() => setDeleteOpen(true)}
+        />
+      )}
+
+      <DeleteProjectDialog project={project} open={deleteOpen} onOpenChange={setDeleteOpen} />
+    </>
+  );
+}
+
+function SettingsView({
+  settings,
+  onArchive,
+  archiving,
+  archiveError,
+  onOpenDelete,
+}: {
+  settings: ProjectSettings;
+  onArchive: () => void;
+  archiving: boolean;
+  archiveError: string | null;
+  onOpenDelete: () => void;
+}) {
+  const { project, github, manifest, deployProviders, deployWarnings, secrets } = settings;
+  const repoUrl = `https://github.com/${project.owner}/${project.repo}`;
+  const manifestLabel =
+    manifest.ok && manifest.hash && manifest.loadedAt
+      ? `database · rev ${manifest.hash.slice(0, 12)} · ${formatDateTime(manifest.loadedAt)}`
+      : `database`;
+
+  return (
+    <>
 
       <div className="grid gap-3 lg:grid-cols-2">
         <Section title="Project">
@@ -270,6 +347,80 @@ function SettingsView({ settings }: { settings: ProjectSettings }) {
               )}
             </Row>
           </dl>
+        </Section>
+
+        <Section
+          title="Project Secrets"
+          className="lg:col-span-2"
+          aside={
+            <span className="flex items-center gap-1 text-xs text-muted-foreground">
+              <KeyRound className="h-3.5 w-3.5" aria-hidden /> Encrypted at rest · write-only
+            </span>
+          }
+        >
+          {secrets.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No project secrets configured yet. Click <span className="font-medium text-foreground">Edit Project</span> to store a GitHub token or
+              manifest secret.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-[11px] uppercase tracking-wide text-muted-foreground">
+                    <th className="pb-2 pr-4 font-semibold">Name</th>
+                    <th className="pb-2 pr-4 font-semibold">Hint</th>
+                    <th className="pb-2 font-semibold">Last updated</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {secrets.map((secret) => (
+                    <tr key={secret.name}>
+                      <td className="py-2 pr-4 font-mono text-xs font-medium">{secret.name}</td>
+                      <td className="py-2 pr-4 font-mono text-xs text-muted-foreground">{secret.hint}</td>
+                      <td className="py-2 text-xs text-muted-foreground">{formatDateTime(secret.updatedAt)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Section>
+
+        <Section title="Danger Zone" className="lg:col-span-2">
+          <div className="flex flex-col gap-3">
+            {project.archivedAt === null && (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border p-3">
+                <div>
+                  <p className="text-sm font-medium">Archive this project</p>
+                  <p className="text-xs text-muted-foreground">
+                    Hide this project from active views and block new Tasks while keeping historical Tasks, Runs, and Artifacts intact.
+                  </p>
+                </div>
+                <Button type="button" variant="outline" size="sm" onClick={onArchive} disabled={archiving}>
+                  <Archive /> {archiving ? "Archiving…" : "Archive Project"}
+                </Button>
+              </div>
+            )}
+
+            {archiveError && (
+              <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                Could not archive project: {archiveError}
+              </p>
+            )}
+
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50/40 p-3">
+              <div>
+                <p className="text-sm font-medium text-red-900">Delete permanently</p>
+                <p className="text-xs text-red-800">
+                  Permanently delete this project and cascade-remove all Tasks, Runs, Artifacts, Deployments, and Secrets.
+                </p>
+              </div>
+              <Button type="button" variant="destructive" size="sm" onClick={onOpenDelete}>
+                <Trash2 /> Delete Permanently
+              </Button>
+            </div>
+          </div>
         </Section>
       </div>
     </>

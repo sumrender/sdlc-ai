@@ -59,6 +59,14 @@ function ProjectBoardPage() {
           <p className="mt-1 text-[13px] text-muted-foreground">{subtitle}</p>
         </div>
       </header>
+      {project.archivedAt !== null && (
+        <div role="status" className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-900">
+          <span>This project is archived. New tasks cannot be created or started until you restore it.</span>
+          <Link to="/projects/$slug/settings" params={{ slug }} className="font-medium underline">
+            Open Settings to restore
+          </Link>
+        </div>
+      )}
       <div className="overflow-x-auto rounded-lg border border-border bg-card">
         <div className="flex min-w-max items-center gap-1 border-b border-border bg-secondary/40 px-3 pt-2 text-[13px]">
           <span className="rounded-t-md bg-card px-3 py-1.5 font-medium text-foreground shadow-[inset_0_1px_0_hsl(var(--border)),inset_1px_0_0_hsl(var(--border)),inset_-1px_0_0_hsl(var(--border))]">Board</span>
