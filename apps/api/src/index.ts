@@ -1,13 +1,15 @@
 import { serve } from "@hono/node-server";
 import { eq } from "drizzle-orm";
-import type { DeployTargetConfig, Provider } from "@sdlc-ai/shared";
+import type { Provider } from "@sdlc-ai/shared";
 import { ArtifactStore } from "./artifacts/store.js";
 import { closeDb, db, runMigrations } from "./db/index.js";
 import { projects } from "./db/schema.js";
 import { env } from "./env.js";
 import { FakeDeployProvider, FakeGitHubService, FakeSandboxRunner } from "./fakes/index.js";
 import { CloudflareDeployProvider } from "./integrations/cloudflare.js";
+import { getConfigEpoch, loadLocalConfig, startConfigWatch } from "./integrations/config-loader.js";
 import { OctokitGitHubService } from "./integrations/github.js";
+import { loadProjectRow } from "./integrations/project-row.js";
 import { RenderDeployProvider } from "./integrations/render.js";
 import { WorkflowService } from "./pipeline/workflow.js";
 import type { DeployProvider, GitHubService, SandboxRunner } from "./ports.js";
@@ -19,16 +21,13 @@ import { createApp } from "./routes/app.js";
 const STAGING_POLL_MS = 5_000;
 
 async function seedProject() {
-  const deployTargets: DeployTargetConfig[] = [
-    { target: "FE", provider: "CLOUDFLARE", pathPrefix: "fe/", url: env.FE_ORIGIN ?? null },
-    { target: "BE", provider: "RENDER", pathPrefix: "be/", url: env.BE_ORIGIN ?? null },
-  ];
+  const row = await loadProjectRow(env);
   const values = {
-    name: env.GITHUB_REPO,
-    owner: env.GITHUB_OWNER,
-    repo: env.GITHUB_REPO,
-    defaultBranch: env.GITHUB_DEFAULT_BRANCH,
-    deployTargets,
+    name: row.name,
+    owner: row.owner,
+    repo: row.repo,
+    defaultBranch: row.defaultBranch,
+    deployTargets: row.deployTargets,
   };
   const [existing] = await db.select().from(projects).limit(1);
   if (existing) {
@@ -76,7 +75,23 @@ async function main() {
   await runMigrations();
   await seedProject();
 
+  // Prime the local-config cache. Warn-only; never exits.
+  {
+    const read = await loadLocalConfig();
+    if (read.ok) console.log(`[api] local config ${read.source} rev ${read.hash.slice(0, 12)} (epoch ${getConfigEpoch()})`);
+    else console.warn(`[api] local config unavailable: ${read.error}`);
+  }
+
   const workflow = new WorkflowService({ ...wireIntegrations(), artifacts: new ArtifactStore(env.ARTIFACTS_DIR) });
+
+  // Config change bumps the epoch into the setup hash and drops warm containers.
+  const stopConfigWatch = startConfigWatch({
+    onReload: async (info) => {
+      const pool = workflow.deps.sandboxes instanceof TaskSandboxPool ? workflow.deps.sandboxes : null;
+      if (pool) await pool.clear().catch(() => undefined);
+      console.log(`[config] ${info.source} changed → rev ${info.hash.slice(0, 12)} (epoch ${info.epoch}); warm containers cleared`);
+    },
+  });
   const app = createApp(workflow);
 
   const github = await workflow.deps.github.connectionStatus();
@@ -100,6 +115,7 @@ async function main() {
 
   const shutdown = () => {
     clearInterval(ticker);
+    stopConfigWatch();
     server.close();
     void closeDb().finally(() => process.exit(0));
   };

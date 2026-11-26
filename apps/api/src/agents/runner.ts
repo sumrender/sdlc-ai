@@ -142,6 +142,8 @@ export interface InvokeOptions {
   timeoutMs: number;
   label: string;
   dataDir?: string | null;
+  /** Already-resolved per-task env for the agent process. */
+  env?: Record<string, string>;
 }
 
 export async function invokeAgent(ctx: RunContext, options: InvokeOptions): Promise<OpenCodeResult> {
@@ -155,6 +157,7 @@ export async function invokeAgent(ctx: RunContext, options: InvokeOptions): Prom
       timeoutMs: options.timeoutMs,
       onLine: ctx.log,
       dataDir: options.dataDir ?? null,
+      env: options.env,
     });
 
   let result = await call(options.sessionId);

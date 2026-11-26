@@ -1,4 +1,12 @@
-import { computeChangeScope, scopedChecks, scopedUnitTests, type ProjectManifest } from "@sdlc-ai/shared";
+import {
+  computeChangeScope,
+  redactSecrets,
+  resolveSecretEnv,
+  scopedChecks,
+  scopedUnitTests,
+  type EnvSpec,
+  type ProjectManifest,
+} from "@sdlc-ai/shared";
 import type { TaskRow } from "../db/schema.js";
 import { env } from "../env.js";
 import { AgentOutputError, TimeoutError } from "../errors.js";
@@ -88,28 +96,43 @@ async function runChecks(ctx: RunContext, manifest: ProjectManifest): Promise<{ 
   log(`Change scope: ${scopeLabel} (${changedFiles.length} changed file(s))`);
 
   const scopedChecksList = scopedChecks(manifest, scope).map((command) => ({ command, optional: false }));
-  const scopedTests = scopedUnitTests(manifest, scope).map((u) => ({ command: u.command, cwd: u.cwd, env: u.env, optional: u.optional }));
+  // Per-gate resolve from host env (never boot); fail fast, redact `$` logs/payloads.
+  const missing: string[] = [];
+  const allSecrets: string[] = [];
+  const scopedTests = scopedUnitTests(manifest, scope).map((u) => {
+    const { resolved, missing: m, secrets } = resolveSecretEnv(u.env as EnvSpec, (name) => process.env[name]);
+    missing.push(...m);
+    allSecrets.push(...secrets);
+    return { command: u.command, cwd: u.cwd, env: resolved, optional: u.optional };
+  });
+  if (missing.length > 0) throw new AgentOutputError(`Missing required secrets: ${[...new Set(missing)].join(", ")}`);
+  const scrub = (line: string) => (allSecrets.length > 0 ? redactSecrets(line, allSecrets) : line);
   const commands: (CheckCommand & { optional: boolean })[] = [...scopedChecksList, ...scopedTests];
-  await bus.emit(task.id, "CHECKS_STARTED", { commands: commands.map((c) => c.command), scope: scopeLabel });
+  await bus.emit(task.id, "CHECKS_STARTED", { commands: commands.map((c) => scrub(c.command)), scope: scopeLabel });
   const deadline = Date.now() + TIMEOUTS.CHECKS;
   for (const { command, cwd, env, optional } of commands) {
-    log(`$ ${command}${optional ? " (optional)" : ""}`);
+    log(scrub(`$ ${command}${optional ? " (optional)" : ""}`));
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new TimeoutError("Checks timed out after 10 minutes");
-    const result = await sandbox.exec(command, { cwd: cwd && cwd !== "." ? `${WORKSPACE}/${cwd}` : WORKSPACE, env, timeoutMs: remaining, onLine: log });
+    const result = await sandbox.exec(command, {
+      cwd: cwd && cwd !== "." ? `${WORKSPACE}/${cwd}` : WORKSPACE,
+      env,
+      timeoutMs: remaining,
+      onLine: (line, stream) => log(scrub(stream === "stderr" ? `[stderr] ${line}` : line)),
+    });
     if (result.timedOut) throw new TimeoutError("Checks timed out after 10 minutes");
     if (result.exitCode !== 0) {
-      const output = tail(`${result.stdout}\n${result.stderr}`, 8000);
+      const output = scrub(tail(`${result.stdout}\n${result.stderr}`, 8000));
       if (optional && isOptionalRunnerMissing(output)) {
-        log(`[warn] Optional check "${command}" skipped (runner missing): ${output.slice(0, 300)}`);
-        await bus.emit(task.id, "CHECKS_COMPLETED", { ok: true, command, skippedOptional: true });
+        log(scrub(`[warn] Optional check "${command}" skipped (runner missing): ${output.slice(0, 300)}`));
+        await bus.emit(task.id, "CHECKS_COMPLETED", { ok: true, command: scrub(command), skippedOptional: true });
         continue;
       }
-      await bus.emit(task.id, "CHECKS_COMPLETED", { ok: false, command, exitCode: result.exitCode });
+      await bus.emit(task.id, "CHECKS_COMPLETED", { ok: false, command: scrub(command), exitCode: result.exitCode });
       return { command, output };
     }
   }
-  await bus.emit(task.id, "CHECKS_COMPLETED", { ok: true, commands: commands.map((c) => c.command) });
+  await bus.emit(task.id, "CHECKS_COMPLETED", { ok: true, commands: commands.map((c) => scrub(c.command)) });
   return null;
 }
 

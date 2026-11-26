@@ -1,6 +1,7 @@
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import type { RunStatus } from "@sdlc-ai/shared";
+import { redactSecrets, resolveSecretEnv, type EnvSpec } from "@sdlc-ai/shared";
 import { db } from "../db/index.js";
 import { testRuns, type TestRunRow } from "../db/schema.js";
 import { AgentOutputError, SandboxError, TimeoutError, errorMessage } from "../errors.js";
@@ -84,14 +85,17 @@ async function execute(deps: Deps, run: TestRunRow): Promise<void> {
       const forced = await forceVideoOn(sandbox, e2e, cwd, log);
       cleanupOverlay = forced.cleanup;
       const command = forced.command;
-      const env = { ...e2e.env };
-      log(`$ ${command}  (cwd ${cwd})`);
+      // Per-gate resolve from host env (never boot); fail fast.
+      const { resolved: env, missing, secrets } = resolveSecretEnv(e2e.env as EnvSpec, (name) => process.env[name]);
+      if (missing.length > 0) throw new AgentOutputError(`Missing required secrets for e2e: ${[...new Set(missing)].join(", ")}`);
+      const scrub = (line: string) => (secrets.length > 0 ? redactSecrets(line, secrets) : line);
+      log(scrub(`$ ${command}  (cwd ${cwd})`));
       const started = Date.now();
       const result = await sandbox.exec(command, {
         cwd,
         env,
         timeoutMs: TIMEOUTS.TEST_RUN,
-        onLine: log,
+        onLine: (line, stream) => log(scrub(stream === "stderr" ? `[stderr] ${line}` : line)),
       });
       durationMs = Date.now() - started;
       if (result.timedOut) throw new TimeoutError("Test Run timed out after 10 minutes");
@@ -99,7 +103,7 @@ async function execute(deps: Deps, run: TestRunRow): Promise<void> {
       exitCode = result.exitCode;
       const combined = `${result.stdout}\n${result.stderr}`;
       summary = parsePlaywrightSummary(combined);
-      output = tail(combined, 20_000);
+      output = scrub(tail(combined, 20_000));
 
       const dest = await deps.artifacts.testRunDir(task.id, run.id);
       const artifactPaths = withVideoDir(e2e, forced.videoDir);

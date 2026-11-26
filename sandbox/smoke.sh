@@ -28,6 +28,9 @@ echo "==> building $IMAGE"
 # Via build.mjs so the image gets the sdlc.dockerfile-sha stamp the API uses to detect staleness.
 DOCKERFILE="$DOCKERFILE" SANDBOX_IMAGE="$IMAGE" node "$HERE/build.mjs"
 
+echo "==> sdlc.config.ts (project config lints; infra stays in .env)"
+pnpm --filter @sdlc-ai/api exec tsx "$HERE/lint-config.ts"
+
 echo "==> starting sandbox $NAME"
 docker run -d --rm --name "$NAME" \
   -v sdlc-ai-cache:/cache \

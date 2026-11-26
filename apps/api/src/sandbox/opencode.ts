@@ -1,3 +1,4 @@
+import { redactSecrets } from "@sdlc-ai/shared";
 import type { Sandbox } from "../ports.js";
 import { WORKSPACE } from "./docker.js";
 import { shellQuoteIfNeeded } from "./process.js";
@@ -12,6 +13,8 @@ export interface OpenCodeOptions {
   onLine: (line: string) => void;
   /** Isolated OpenCode data dir so parallel sessions in one container don't share SQLite. */
   dataDir?: string | null;
+  /** Already-resolved per-task env. */
+  env?: Record<string, string>;
 }
 
 export interface OpenCodeResult {
@@ -38,18 +41,21 @@ export async function runOpenCode(sandbox: Sandbox, options: OpenCodeOptions): P
   const parts = new Map<string, string>();
   let anonymous = "";
   let sessionId: string | null = null;
+  // Redact resolved secrets + API key from logs and result. Caller resolves per gate.
+  const secrets = [options.apiKey, ...Object.values(options.env ?? {})].filter((s) => s.length > 0);
+  const emit = (line: string) => options.onLine(secrets.length > 0 ? redactSecrets(line, secrets) : line);
 
   const result = await sandbox.exec(command, {
     cwd: WORKSPACE,
     stdin: options.prompt,
-    env: { OPENCODE_API_KEY: options.apiKey, ...(options.dataDir ? { OPENCODE_DATA_DIR: options.dataDir } : {}) },
+    env: { OPENCODE_API_KEY: options.apiKey, ...(options.dataDir ? { OPENCODE_DATA_DIR: options.dataDir } : {}), ...(options.env ?? {}) },
     timeoutMs: options.timeoutMs,
     onLine: (line, stream) => {
       if (!line.trim()) return;
       const event = tryParseJson(line);
       if (!event) {
         if (stream === "stdout") anonymous += line + "\n";
-        options.onLine(stream === "stderr" ? `[stderr] ${line}` : line);
+        emit(stream === "stderr" ? `[stderr] ${line}` : line);
         return;
       }
       sessionId ??= extractSessionId(event);
@@ -60,12 +66,12 @@ export async function runOpenCode(sandbox: Sandbox, options: OpenCodeOptions): P
         else anonymous += text;
       }
       const display = describeEvent(event);
-      if (display) options.onLine(display);
+      if (display) emit(display);
     },
   });
 
   const text = [...parts.values(), anonymous].join("\n").trim();
-  return { text, sessionId, exitCode: result.exitCode, timedOut: result.timedOut };
+  return { text: secrets.length > 0 ? redactSecrets(text, secrets) : text, sessionId, exitCode: result.exitCode, timedOut: result.timedOut };
 }
 
 type Json = Record<string, unknown>;

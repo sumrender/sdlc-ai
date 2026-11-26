@@ -48,7 +48,8 @@ import {
 import { env } from "../env.js";
 import { HttpError, errorMessage } from "../errors.js";
 import { bus } from "../events/bus.js";
-import { loadManifest } from "../integrations/manifest.js";
+import { loadManifest, loadManifestForTask } from "../integrations/manifest.js";
+import { getCurrentConfigHash, hashManifest } from "../integrations/config-loader.js";
 import { TIMEOUTS, type Deps } from "./deps.js";
 import { computeTouchedTargets, isTerminalDeployment, pollDeployments } from "./deployments.js";
 import { describeSummary, e2eFeedback, startTestRun } from "./e2e.js";
@@ -260,7 +261,8 @@ export class WorkflowService {
   private async requiredReviewers(task: TaskRow): Promise<Reviewer[]> {
     try {
       const project = await getProject();
-      const manifest = await loadManifest(this.deps.github, project.defaultBranch);
+      // Task-pinned snapshot so reviewers in one stage share one manifest.
+      const manifest = await loadManifestForTask(this.deps.github, project.defaultBranch, task);
       const changedFiles = task.pullRequestNumber ? await this.deps.github.getChangedFiles(task.pullRequestNumber).catch(() => [] as string[]) : [];
       return scopedReviewers(computeChangeScope(changedFiles, manifest));
     } catch {
@@ -364,6 +366,7 @@ export class WorkflowService {
           branchName: pr.head,
           pullRequestNumber: pr.number,
           pullRequestUrl: pr.url,
+          configHash: getCurrentConfigHash() ?? null,
           stageEnteredAt: new Date(),
         })
         .returning();
@@ -391,6 +394,7 @@ export class WorkflowService {
           branchName,
           issueNumber: issue.number,
           issueUrl: issue.url,
+          configHash: getCurrentConfigHash() ?? null,
           stageEnteredAt: new Date(),
         })
         .returning();
@@ -417,6 +421,7 @@ export class WorkflowService {
         branchName,
         issueNumber: issue.number,
         issueUrl: issue.url,
+        configHash: getCurrentConfigHash() ?? null,
         stageEnteredAt: new Date(),
       })
       .returning();
@@ -495,9 +500,25 @@ export class WorkflowService {
         `Max task limit reached (${active.length} of ${limit} active). Increase the limit in Settings to start more tasks.`,
         MAX_CONCURRENT_TASKS_ERROR_CODE,
       );
+    // Version-stamp the active config rev before the task leaves TODO.
+    await this.stampConfigHash(task);
     const row = await transition(task, "PLANNING", "RUNNING");
     await this.advance(taskId);
     return (await requireTask(taskId)) ?? row;
+  }
+
+  /** Best-effort config stamp. Never blocks start; unstamped tasks fall back to live reads. */
+  private async stampConfigHash(task: TaskRow): Promise<void> {
+    try {
+      let hash = getCurrentConfigHash();
+      if (!hash) {
+        const project = await getProject();
+        hash = hashManifest(await loadManifest(this.deps.github, project.defaultBranch));
+      }
+      if (hash && hash !== task.configHash) await updateTask(task.id, { configHash: hash });
+    } catch (e) {
+      console.warn(`[workflow] config stamp skipped for task ${task.id}: ${errorMessage(e)}`);
+    }
   }
 
   async retry(taskId: string): Promise<TaskRow> {

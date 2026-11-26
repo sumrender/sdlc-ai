@@ -37,12 +37,23 @@ function findDockerfile(): string | null {
   return null;
 }
 
+/** sha256 of the Dockerfile on disk ("unknown" when unreadable). */
+export function getImageStamp(): string {
+  const dockerfile = findDockerfile();
+  if (!dockerfile) return "unknown";
+  try {
+    return createHash("sha256").update(fs.readFileSync(dockerfile)).digest("hex");
+  } catch {
+    return "unknown";
+  }
+}
+
 export async function checkSandboxImage(image: string, dockerBin: string): Promise<SandboxImageStatus> {
   const dockerfile = findDockerfile();
   // No checkout to compare against (e.g. a packaged deploy): nothing to warn about.
   if (!dockerfile) return OK;
 
-  const expected = createHash("sha256").update(fs.readFileSync(dockerfile)).digest("hex");
+  const expected = getImageStamp();
   const format = `{{index .Config.Labels "${DOCKERFILE_SHA_LABEL}"}}`;
 
   let stdout: string;

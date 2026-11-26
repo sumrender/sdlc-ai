@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { AlertTriangle, CheckCircle2, ExternalLink, RefreshCw, XCircle } from "lucide-react";
-import { MANIFEST_PATH, MAX_CONCURRENT_TASKS_LIMIT, type ProjectSettings, type Provider } from "@sdlc-ai/shared";
+import { MAX_CONCURRENT_TASKS_LIMIT, type ProjectSettings, type Provider } from "@sdlc-ai/shared";
 import { Section } from "~/components/Section";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -30,7 +30,7 @@ function SettingsPage() {
           </nav>
           <h1 className="mt-1.5 text-xl font-semibold tracking-tight">Settings</h1>
           <p className="mt-1 max-w-2xl text-[13px] text-muted-foreground">
-            Everything on this page is read from the control plane and the Project's repository at request time. Nothing is hardcoded in the UI.
+            Everything on this page is read from the control plane and the local sdlc.config.ts at request time. Nothing is hardcoded in the UI.
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={() => void query.refetch()} disabled={query.isFetching}>
@@ -50,8 +50,12 @@ function SettingsPage() {
 }
 
 function SettingsView({ settings }: { settings: ProjectSettings }) {
-  const { project, github, manifest, deployProviders } = settings;
+  const { project, github, manifest, deployProviders, deployWarnings } = settings;
   const repoUrl = `https://github.com/${project.owner}/${project.repo}`;
+  const manifestLabel =
+    manifest.ok && manifest.source && manifest.hash && manifest.loadedAt
+      ? `${manifest.source} · rev ${manifest.hash.slice(0, 12)} · ${formatDateTime(manifest.loadedAt)}`
+      : `sdlc.config.ts · not loaded yet`;
 
   return (
     <>
@@ -59,10 +63,10 @@ function SettingsView({ settings }: { settings: ProjectSettings }) {
         <div role="alert" className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
           <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" aria-hidden />
           <div className="min-w-0">
-            <p className="text-sm font-medium text-amber-800">Project Manifest missing or invalid</p>
+            <p className="text-sm font-medium text-amber-800">Project config missing or invalid</p>
             <p className="mt-0.5 text-sm text-amber-800">
-              The control plane cannot prepare a Workspace, run Checks, or run end-to-end tests until <span className="font-mono text-xs">{MANIFEST_PATH}</span> on{" "}
-              <span className="font-mono text-xs">{project.defaultBranch}</span> is valid.
+              The control plane cannot prepare a Workspace, run Checks, or run end-to-end tests until <span className="font-mono text-xs">sdlc.config.ts</span>{" "}
+              loads cleanly (edit it, then POST <span className="font-mono text-xs">/project/config/reload</span> or restart the API).
             </p>
             <pre className="mt-2 whitespace-pre-wrap break-words rounded-lg bg-amber-100/60 px-2 py-1.5 font-mono text-xs text-amber-900">{manifest.error}</pre>
           </div>
@@ -117,6 +121,19 @@ function SettingsView({ settings }: { settings: ProjectSettings }) {
         </Section>
 
         <Section title="Deploy Targets" className="lg:col-span-2" aside={<span className="text-xs text-muted-foreground">{project.deployTargets.length} configured</span>}>
+          {deployWarnings.length > 0 && (
+            <div role="alert" className="mb-3 flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+              <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" aria-hidden />
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-amber-800">Deploy target watches no stack paths</p>
+                <ul className="mt-0.5 flex flex-col gap-0.5 text-sm text-amber-800">
+                  {deployWarnings.map((w) => (
+                    <li key={w} className="font-mono text-xs">{w}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          )}
           {project.deployTargets.length === 0 ? (
             <p className="text-sm text-muted-foreground">No Deploy Target is configured. Merged changes will not be observed deploying.</p>
           ) : (
@@ -160,7 +177,7 @@ function SettingsView({ settings }: { settings: ProjectSettings }) {
           className="lg:col-span-2"
           aside={
             <span className="font-mono text-[11px] text-muted-foreground">
-              {MANIFEST_PATH} @ {project.defaultBranch}
+              {manifestLabel}
             </span>
           }
         >

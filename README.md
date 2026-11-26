@@ -50,6 +50,28 @@ OPENCODE_API_KEY=... pnpm sandbox:smoke   # verify the image once per change
 Then set `GITHUB_TOKEN`, `OPENCODE_API_KEY`, and the Render / Cloudflare variables in
 `.env`, set `SDLC_FAKES=false`, and `pnpm dev`.
 
+## Project config vs infrastructure
+
+Project behavior lives in `sdlc.config.ts` (repository, setup/checks, stacks,
+e2e, deploy targets, models) — versioned, with its `rev <hash>` shown in
+Settings. Secrets and infrastructure stay in `.env` (`DATABASE_URL`,
+`GITHUB_TOKEN`, `OPENCODE_API_KEY`, `*_ORIGIN`, `SANDBOX_IMAGE`, …); see
+`.env.example`. The repo `.sdlc/manifest.json` is no longer read; a broken
+`sdlc.config.ts` surfaces as an amber warning in Settings instead of silently
+falling back. `sandbox/smoke.sh` lints the config and asserts the image build
+stamp (`sdlc.dockerfile-sha`).
+
+### Residual risks (accepted)
+
+- Target drift with no config change (e.g. a lockfile bump) keeps reusing the
+  warm container ("Setup skipped") until the image is rebuilt.
+- No per-branch tooling experiments without a restart: config is
+  process-global; `POST /project/config/reload` (or a restart) picks up edits.
+- Secrets resolve per gate into plaintext `docker exec -e` env, visible via
+  `docker inspect` while the container runs.
+- Changing `e2e.cwd`/`testDir` mid-task orphans the `sdlc-pw.config.ts`
+  overlay written for the previous paths.
+
 ## Scripts
 
 | Command | What |

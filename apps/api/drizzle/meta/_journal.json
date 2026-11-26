@@ -64,6 +64,13 @@
       "when": 1790092493199,
       "tag": "0008_short_iron_fist",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1790200000000,
+      "tag": "0009_task_config_hash",
+      "breakpoints": true
     }
   ]
 }

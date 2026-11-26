@@ -148,9 +148,17 @@ export const GitHubConnectionSchema = z.object({
 });
 export type GitHubConnection = z.infer<typeof GitHubConnectionSchema>;
 
-/** The Project Manifest as read from the repository, or why it could not be. */
+/** The Project Manifest as read from the local sdlc.config.ts, or why it could not be. */
 export const ManifestReadSchema = z.discriminatedUnion("ok", [
-  z.object({ ok: z.literal(true), manifest: ProjectManifestSchema }),
+  z.object({
+    ok: z.literal(true),
+    manifest: ProjectManifestSchema,
+    /** sha256 rev of the canonical manifest; absent until the first successful read. */
+    hash: z.string().optional(),
+    /** Where the manifest came from: always sdlc.config.ts. */
+    source: z.string().optional(),
+    loadedAt: z.string().optional(),
+  }),
   z.object({ ok: z.literal(false), error: z.string() }),
 ]);
 export type ManifestRead = z.infer<typeof ManifestReadSchema>;
@@ -180,5 +188,7 @@ export const ProjectSettingsSchema = z.object({
   activeTaskCount: z.number().int().default(0),
   maxConcurrentTasks: MaxConcurrentTasksSchema.default(3),
   reuseSandbox: z.boolean().default(true),
+  /** Deploy targets whose pathPrefix overlaps no stack paths (warn-only). */
+  deployWarnings: z.array(z.string()).default([]),
 });
 export type ProjectSettings = z.infer<typeof ProjectSettingsSchema>;

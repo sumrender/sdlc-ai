@@ -10,6 +10,7 @@ import { ArtifactStore } from "./artifacts/store.js";
 import { closeDb, db, runMigrations } from "./db/index.js";
 import { agentRuns, approvals, deployments, events, projects, questions, reviews, tasks, testRuns, type TaskRow } from "./db/schema.js";
 import { env } from "./env.js";
+import { loadProjectRow } from "./integrations/project-row.js";
 
 const store = new ArtifactStore(env.ARTIFACTS_DIR);
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000);
@@ -370,15 +371,9 @@ function crc32(buf: Buffer): number {
 
 async function upsertProject(): Promise<string> {
   const [existing] = await db.select().from(projects).limit(1);
+  const projectRow = await loadProjectRow(env);
   const values = {
-    name: env.GITHUB_REPO,
-    owner: env.GITHUB_OWNER,
-    repo: env.GITHUB_REPO,
-    defaultBranch: env.GITHUB_DEFAULT_BRANCH,
-    deployTargets: [
-      { target: "FE" as const, provider: "CLOUDFLARE" as const, pathPrefix: "fe/", url: env.FE_ORIGIN ?? null },
-      { target: "BE" as const, provider: "RENDER" as const, pathPrefix: "be/", url: env.BE_ORIGIN ?? null },
-    ],
+    ...projectRow,
     maxConcurrentTasks: existing?.maxConcurrentTasks ?? 3,
   };
   if (existing) {

@@ -2,7 +2,7 @@ import { ReviewOutputSchema, type ReviewOutput, type Reviewer } from "@sdlc-ai/s
 import { db } from "../db/index.js";
 import { reviews, type TaskRow, type TestRunRow } from "../db/schema.js";
 import { bus } from "../events/bus.js";
-import { loadManifest } from "../integrations/manifest.js";
+import { loadManifestForTask } from "../integrations/manifest.js";
 import { TIMEOUTS } from "../pipeline/deps.js";
 import { latestTestRun } from "../pipeline/tasks.js";
 import { WORKSPACE } from "../sandbox/docker.js";
@@ -27,7 +27,8 @@ export const reviewerBody =
     const { deps, sandbox, log, task, project } = ctx;
     if (!task.branchName) throw new Error("Task has no branch name");
 
-    const manifest = await loadManifest(deps.github, project.defaultBranch);
+    // Task-pinned snapshot so parallel reviewers share one manifest.
+    const manifest = await loadManifestForTask(deps.github, project.defaultBranch, task);
     const reuse = Boolean((project as { reuseSandbox?: boolean }).reuseSandbox);
     if (reuse) {
       await prepareWorkspaceReuse(sandbox, deps.github, { ref: task.branchName, manifest, agents: [reviewer], log });

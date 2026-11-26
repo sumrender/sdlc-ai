@@ -1,11 +1,13 @@
 import type { Agent, ProjectManifest } from "@sdlc-ai/shared";
-import { fullSetup } from "@sdlc-ai/shared";
+import { fullSetup, redactSecrets } from "@sdlc-ai/shared";
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
 import { AgentOutputError, SandboxError, TimeoutError, WorkspaceError } from "../errors.js";
+import { computeSetupHash, getCurrentConfigHash } from "../integrations/config-loader.js";
 import { TIMEOUTS } from "../pipeline/deps.js";
 import { tail } from "../pipeline/tasks.js";
 import type { GitHubService, Sandbox } from "../ports.js";
 import { WORKSPACE } from "./docker.js";
+import { getImageStamp } from "./image-stamp.js";
 import { shellQuote } from "./process.js";
 
 export interface WorkspaceOptions {
@@ -14,6 +16,13 @@ export interface WorkspaceOptions {
   manifest: ProjectManifest;
   agents: readonly Agent[];
   log: (line: string) => void;
+  /** Pinned config rev. Defaults to the loader's current hash. */
+  configHash?: string | null;
+  /**
+   * Already-resolved setup env for this task. Callers resolve per task;
+   * absent means no extra env.
+   */
+  resolvedSetupEnv?: Record<string, string>;
 }
 
 // The token travels only as a per-invocation git config flag, never into .git/config or the filesystem.
@@ -37,7 +46,12 @@ export async function prepareWorkspace(sandbox: Sandbox, github: GitHubService, 
 
   for (const command of fullSetup(options.manifest)) {
     options.log(`$ ${command}`);
-    const result = await sandbox.exec(command, { cwd: WORKSPACE, timeoutMs: TIMEOUTS.WORKSPACE, onLine: options.log });
+    const result = await sandbox.exec(command, {
+      cwd: WORKSPACE,
+      env: options.resolvedSetupEnv,
+      timeoutMs: TIMEOUTS.WORKSPACE,
+      onLine: options.resolvedSetupEnv ? redactSetupLine(options) : options.log,
+    });
     if (result.timedOut) throw new WorkspaceError(`setup command timed out: ${command}`);
     if (result.exitCode !== 0) throw new WorkspaceError(`setup command failed (exit ${result.exitCode}): ${command}`);
   }
@@ -46,6 +60,12 @@ export async function prepareWorkspace(sandbox: Sandbox, github: GitHubService, 
     const definition = AGENT_DEFINITIONS[agent];
     await sandbox.writeFile(`${WORKSPACE}/.opencode/agent/${definition.name}.md`, definition.content);
   }
+}
+
+function redactSetupLine(options: WorkspaceOptions): (line: string) => void {
+  const secrets = Object.values(options.resolvedSetupEnv ?? {});
+  if (secrets.length === 0) return options.log;
+  return (line: string) => options.log(redactSecrets(line, secrets));
 }
 
 // Reuse path for `reuseSandbox`: keep the container, switch refs, skip setup
@@ -74,7 +94,7 @@ export async function prepareWorkspaceReuse(sandbox: Sandbox, github: GitHubServ
     const probe = await sandbox.exec(`test -d ${WORKSPACE}/.git && echo SDLC_HAS_GIT || echo SDLC_NO_GIT`, {});
     if (!probe.stdout.includes("SDLC_HAS_GIT")) {
       await prepareWorkspace(sandbox, github, options);
-      await markSetupDone(sandbox, options.manifest);
+      await markSetupDone(sandbox, options.manifest, resolveConfigHash(options));
       return;
     }
 
@@ -109,16 +129,21 @@ export async function prepareWorkspaceReuse(sandbox: Sandbox, github: GitHubServ
       if (reset.exitCode !== 0) throw new WorkspaceError(`git reset failed: ${reset.stderr.trim()}`);
     }
 
-    if (await isSetupFresh(sandbox, options.manifest)) {
-      options.log("Setup skipped (cached for this container)");
+    if (await isSetupFresh(sandbox, options.manifest, resolveConfigHash(options))) {
+      options.log(`Setup skipped (cached for this container · setup ${setupHash(options.manifest, resolveConfigHash(options)).slice(0, 12)})`);
     } else {
       for (const command of fullSetup(options.manifest)) {
         options.log(`$ ${command}`);
-        const result = await sandbox.exec(command, { cwd: WORKSPACE, timeoutMs: TIMEOUTS.WORKSPACE, onLine: options.log });
+        const result = await sandbox.exec(command, {
+          cwd: WORKSPACE,
+          env: options.resolvedSetupEnv,
+          timeoutMs: TIMEOUTS.WORKSPACE,
+          onLine: options.resolvedSetupEnv ? redactSetupLine(options) : options.log,
+        });
         if (result.timedOut) throw new WorkspaceError(`setup command timed out: ${command}`);
         if (result.exitCode !== 0) throw new WorkspaceError(`setup command failed (exit ${result.exitCode}): ${command}`);
       }
-      await markSetupDone(sandbox, options.manifest);
+      await markSetupDone(sandbox, options.manifest, resolveConfigHash(options));
     }
 
     for (const agent of options.agents) {
@@ -128,21 +153,26 @@ export async function prepareWorkspaceReuse(sandbox: Sandbox, github: GitHubServ
   });
 }
 
-function setupHash(manifest: ProjectManifest): string {
-  return JSON.stringify(fullSetup(manifest));
+/** setupHash = sha256(configHash + JSON(fullSetup) + imageStamp). */
+function setupHash(manifest: ProjectManifest, configHash?: string | null): string {
+  return computeSetupHash(manifest, configHash, getImageStamp());
 }
 
-async function isSetupFresh(sandbox: Sandbox, manifest: ProjectManifest): Promise<boolean> {
+function resolveConfigHash(options: Pick<WorkspaceOptions, "configHash">): string | null {
+  return options.configHash ?? getCurrentConfigHash() ?? null;
+}
+
+async function isSetupFresh(sandbox: Sandbox, manifest: ProjectManifest, configHash?: string | null): Promise<boolean> {
   try {
     const r = await sandbox.exec(`cat /tmp/.sdlc-setup-hash 2>/dev/null || echo ""`, {});
-    return r.stdout.trim() === setupHash(manifest) && r.stdout.trim().length > 0;
+    return r.stdout.trim() === setupHash(manifest, configHash) && r.stdout.trim().length > 0;
   } catch {
     return false;
   }
 }
 
-async function markSetupDone(sandbox: Sandbox, manifest: ProjectManifest): Promise<void> {
-  await sandbox.writeFile("/tmp/.sdlc-setup-hash", setupHash(manifest)).catch(() => undefined);
+async function markSetupDone(sandbox: Sandbox, manifest: ProjectManifest, configHash?: string | null): Promise<void> {
+  await sandbox.writeFile("/tmp/.sdlc-setup-hash", setupHash(manifest, configHash)).catch(() => undefined);
 }
 
 /**

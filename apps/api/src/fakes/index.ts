@@ -1,14 +1,16 @@
 import { randomBytes } from "node:crypto";
-import { MANIFEST_PATH } from "@sdlc-ai/shared";
+import { MANIFEST_PATH, defineProject, toProjectManifest } from "@sdlc-ai/shared";
 import type { DeployLookup, DeployProvider, ExecOptions, ExecResult, GitHubService, Sandbox, SandboxRunner } from "../ports.js";
 
 // Scripted in-memory fakes so the whole pipeline can be driven over HTTP without Docker, GitHub or OpenCode Zen.
 
-const FAKE_MANIFEST = JSON.stringify(
-  {
-    version: 2,
-    setup: ["npm ci"],
-    checks: [],
+// Single source for the fake manifest: a converted project config, so the
+// fakes can never drift from the config schema (P3 row-builder migration).
+const FAKE_CONFIG = defineProject({
+  version: 2,
+  repository: { owner: "fake", repo: "meme", defaultBranch: "main" },
+  root: { setup: ["npm ci"], checks: [] },
+  stacks: {
     frontend: {
       dir: "fe",
       paths: ["fe/**"],
@@ -25,11 +27,16 @@ const FAKE_MANIFEST = JSON.stringify(
       unitTests: null,
       integrations: [],
     },
-    e2e: { command: "npm run test:e2e", cwd: "fe", env: { E2E_START_SERVER: "true" }, artifacts: ["fe/playwright-report", "fe/test-results"] },
   },
-  null,
-  2,
-);
+  e2e: {
+    command: "npm run test:e2e",
+    cwd: "fe",
+    env: { E2E_START_SERVER: "true" },
+    artifacts: ["fe/playwright-report", "fe/test-results"],
+  },
+});
+
+const FAKE_MANIFEST = JSON.stringify(toProjectManifest(FAKE_CONFIG), null, 2);
 
 const FAKE_DIFF = `diff --git a/fe/src/components/GalleryHeader.tsx b/fe/src/components/GalleryHeader.tsx
 --- a/fe/src/components/GalleryHeader.tsx

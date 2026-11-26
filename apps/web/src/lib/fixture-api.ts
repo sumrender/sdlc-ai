@@ -1,7 +1,12 @@
 import {
   DEFAULT_MAX_CONCURRENT_TASKS,
   DEMO_TASK,
+  buildProjectRow,
+  defineProject,
+  deployOverlapWarnings,
   findBlockingTasks,
+  hashManifest,
+  toProjectManifest,
   MAX_CONCURRENT_TASKS_ERROR_CODE,
   retryAvailability,
   sendBackAvailability,
@@ -124,17 +129,52 @@ const REVIEW_OUTPUT: Record<Reviewer, { verdict: Verdict; findings: Finding[] }>
   REVIEWER_BACKEND: { verdict: "PASS", findings: [{ severity: "INFO", message: "No backend paths touched in this change", file: "be/Controllers/TemplatesController.cs" }] },
 };
 
+const FIXTURE_CONFIG = defineProject({
+  version: 2,
+  repository: { owner: "sumrender", repo: "meme", defaultBranch: "main" },
+  root: { setup: ["npm ci"], checks: ["npm run lint"] },
+  stacks: {
+    frontend: {
+      dir: "fe",
+      paths: ["fe/**"],
+      setup: ["npm ci --prefix fe"],
+      checks: ["npm run build --prefix fe"],
+      unitTests: { command: "npx ng test --watch=false --browsers=ChromeHeadless", cwd: "fe", env: {}, optional: true },
+      integrations: [{ name: "Playwright E2E", notes: "npm run test:e2e in fe; E2E_START_SERVER boots ng serve" }],
+    },
+    backend: {
+      dir: "be",
+      paths: ["be/**"],
+      setup: ["dotnet restore be/Backend.csproj"],
+      checks: ["dotnet build be/Backend.csproj --no-restore"],
+      unitTests: { command: "dotnet test be/Tests/Backend.Tests.csproj --no-build", cwd: ".", env: {}, optional: true },
+      integrations: [{ name: "PostgreSQL 15 + EF Core", notes: "Code-first migrations; connection via be/.env" }],
+    },
+  },
+  e2e: {
+    command: "npm run test:e2e",
+    cwd: "fe",
+    testDir: "e2e",
+    env: { CI: "1", BASE_URL: "http://localhost:5173" },
+    artifacts: ["fe/playwright-report", "fe/test-results"],
+    optional: false,
+  },
+});
+
+// Same single builder the API boot/seed use: the fixture row cannot drift.
+const FIXTURE_ROW = buildProjectRow(FIXTURE_CONFIG, {
+  FE_ORIGIN: "https://meme-fe.stage.example",
+  BE_ORIGIN: "https://meme-be.stage.example",
+});
+const FIXTURE_MANIFEST = toProjectManifest(FIXTURE_CONFIG);
+const FIXTURE_MANIFEST_HASH = hashManifest(FIXTURE_MANIFEST);
+const FIXTURE_MANIFEST_LOADED_AT = new Date().toISOString();
+const FIXTURE_DEPLOY_WARNINGS = deployOverlapWarnings(FIXTURE_ROW.deployTargets, FIXTURE_MANIFEST);
+
 const FIXTURE_SETTINGS: ProjectSettings = {
   project: {
     id: "fixture-project",
-    name: "meme",
-    owner: "sumrender",
-    repo: "meme",
-    defaultBranch: "main",
-    deployTargets: [
-      { target: "FE", provider: "CLOUDFLARE", pathPrefix: "fe/", url: "https://meme-fe.stage.example" },
-      { target: "BE", provider: "RENDER", pathPrefix: "be/", url: "https://meme-be.stage.example" },
-    ],
+    ...FIXTURE_ROW,
     maxConcurrentTasks: DEFAULT_MAX_CONCURRENT_TASKS,
     reuseSandbox: true,
     createdAt: new Date(Date.now() - 7 * 24 * 60 * 60_000).toISOString(),
@@ -142,36 +182,12 @@ const FIXTURE_SETTINGS: ProjectSettings = {
   github: { ok: true, login: "sdlc-ai[bot]" },
   manifest: {
     ok: true,
-    manifest: {
-      version: 2,
-      setup: ["npm ci"],
-      checks: ["npm run lint"],
-      frontend: {
-        dir: "fe",
-        paths: ["fe/**"],
-        setup: ["npm ci --prefix fe"],
-        checks: ["npm run build --prefix fe"],
-        unitTests: { command: "npx ng test --watch=false --browsers=ChromeHeadless", cwd: "fe", env: {}, optional: true },
-        integrations: [{ name: "Playwright E2E", notes: "npm run test:e2e in fe; E2E_START_SERVER boots ng serve" }],
-      },
-      backend: {
-        dir: "be",
-        paths: ["be/**"],
-        setup: ["dotnet restore be/Backend.csproj"],
-        checks: ["dotnet build be/Backend.csproj --no-restore"],
-        unitTests: { command: "dotnet test be/Tests/Backend.Tests.csproj --no-build", cwd: ".", env: {}, optional: true },
-        integrations: [{ name: "PostgreSQL 15 + EF Core", notes: "Code-first migrations; connection via be/.env" }],
-      },
-      e2e: {
-        command: "npm run test:e2e",
-        cwd: "fe",
-        testDir: "e2e",
-        env: { CI: "1", BASE_URL: "http://localhost:5173" },
-        artifacts: ["fe/playwright-report", "fe/test-results"],
-        optional: false,
-      },
-    },
+    manifest: FIXTURE_MANIFEST,
+    hash: FIXTURE_MANIFEST_HASH,
+    source: "sdlc.config.ts",
+    loadedAt: FIXTURE_MANIFEST_LOADED_AT,
   },
+  deployWarnings: FIXTURE_DEPLOY_WARNINGS,
   deployProviders: { CLOUDFLARE: true, RENDER: false },
   models: { developer: "claude-sonnet-5", fast: "claude-haiku-4-5-20251001" },
   sandboxImage: "sdlc-ai-sandbox:local",

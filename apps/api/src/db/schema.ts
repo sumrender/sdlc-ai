@@ -72,6 +72,8 @@ export const tasks = pgTable("tasks", {
   e2eReportVideoUrl: text("e2e_report_video_url"),
   pendingFeedback: text("pending_feedback"),
   error: text("error"),
+  // Config rev (sha256) active when the task started. Null = unstamped (legacy).
+  configHash: text("config_hash"),
   stageEnteredAt: ts("stage_entered_at").notNull().defaultNow(),
   createdAt: ts("created_at").notNull().defaultNow(),
   updatedAt: ts("updated_at").notNull().defaultNow(),

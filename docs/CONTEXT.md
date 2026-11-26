@@ -65,7 +65,7 @@ One deterministic execution of the Project Manifest's end-to-end test command in
 _Avoid_: E2E run (E2E is the Stage), test job
 
 **Project Manifest**:
-The Project's own declaration, versioned in its repository, of how a Workspace is prepared (setup commands), how a change is verified before commit (Checks), and how end-to-end tests run. The control plane reads it; it never hardcodes a repository's tooling.
+The Project's own declaration, versioned in its repository, of how a Workspace is prepared (setup commands), how a change is verified before commit (Checks), and how end-to-end tests run. The control plane reads it; it never hardcodes a repository's tooling. Project behavior lives in `sdlc.config.ts` (shown as `rev <hash>` in Settings); secrets and infrastructure stay in `.env`.
 _Avoid_: config, settings (Settings is the control-plane screen that *displays* the Manifest), recipe
 
 **Check**:

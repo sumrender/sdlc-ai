@@ -8,10 +8,79 @@ export const IntegrationSchema = z.object({
 });
 export type Integration = z.infer<typeof IntegrationSchema>;
 
+/** Host-side secret ref. Value is resolved per gate from `process.env[env]`, never stored in config. */
+export const SecretRefSchema = z.object({
+  env: z.string().min(1),
+  optional: z.boolean().default(false),
+});
+export type SecretRef = z.infer<typeof SecretRefSchema>;
+
+export const EnvValueSchema = z.union([z.string(), SecretRefSchema]);
+export type EnvValue = z.infer<typeof EnvValueSchema>;
+/** Raw `env` spec as written in config: literals or secret refs. */
+export type EnvSpec = Record<string, EnvValue>;
+
+function defaultSecretLookup(name: string): string | undefined {
+  const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process;
+  return proc?.env?.[name];
+}
+
+export interface ResolveSecretsResult {
+  resolved: Record<string, string>;
+  /** Missing entries as `KEY (env FOO)`. */
+  missing: string[];
+  /** Resolved values, for redacting logs/payloads. */
+  secrets: string[];
+}
+
+/** Resolve an `env` spec against the host env. Pure: caller supplies lookup so each gate resolves live. */
+export function resolveSecretEnv(
+  envSpec: EnvSpec | Record<string, string> | undefined | null,
+  lookup: (name: string) => string | undefined = defaultSecretLookup,
+): ResolveSecretsResult {
+  const resolved: Record<string, string> = {};
+  const missing: string[] = [];
+  const secrets: string[] = [];
+  for (const [key, value] of Object.entries(envSpec ?? {})) {
+    if (typeof value === "string") {
+      resolved[key] = value;
+      continue;
+    }
+    const ref = SecretRefSchema.parse(value);
+    const found = lookup(ref.env);
+    if (found === undefined || found === "") {
+      if (ref.optional) continue;
+      missing.push(`${key} (env ${ref.env})`);
+      continue;
+    }
+    resolved[key] = found;
+    secrets.push(found);
+  }
+  return { resolved, missing, secrets };
+}
+
+/** resolveSecretEnv but throws listing every missing name. */
+export function resolveSecretEnvOrThrow(
+  envSpec: EnvSpec | Record<string, string> | undefined | null,
+  lookup?: (name: string) => string | undefined,
+): { resolved: Record<string, string>; secrets: string[] } {
+  const { resolved, missing, secrets } = resolveSecretEnv(envSpec, lookup);
+  if (missing.length > 0) throw new Error(`Missing required secrets: ${[...new Set(missing)].join(", ")}`);
+  return { resolved, secrets };
+}
+
+/** Replace every secret value with `<REDACTED>` (longest first). */
+export function redactSecrets(text: string, secrets: readonly string[]): string {
+  let out = text;
+  const ordered = [...new Set(secrets)].filter((s) => s.length > 0).sort((a, b) => b.length - a.length);
+  for (const secret of ordered) out = out.split(secret).join("<REDACTED>");
+  return out;
+}
+
 export const UnitTestsSchema = z.object({
   command: z.string().min(1),
   cwd: z.string().default("."),
-  env: z.record(z.string()).default({}),
+  env: z.record(EnvValueSchema).default({}),
   /** When true, a missing runner/skipped suite is not a failure. */
   optional: z.boolean().default(false),
 });
@@ -48,7 +117,7 @@ export const E2eSchema = z.object({
    * Defaults to Playwright's own convention so existing manifests keep working.
    */
   testDir: z.string().default("e2e"),
-  env: z.record(z.string()).default({}),
+  env: z.record(EnvValueSchema).default({}),
   artifacts: z.array(z.string()).default([]),
   /** When true, e2e may be skipped without failing the task. */
   optional: z.boolean().default(false),
